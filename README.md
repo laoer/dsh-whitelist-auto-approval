@@ -10,6 +10,21 @@
 非白名单命令               → 行为完全不变，该弹窗照旧弹
 ```
 
+## 和同类插件的区别
+
+DSH 上已有一批解决"工作区外写入"的插件。按**放行后命令在哪执行**，大致分四类：
+
+| 做法 | 放行后命令在哪执行 | 代表 |
+|---|---|---|
+| **按命令换可写根（本插件）** | 内核沙箱内，可写根换成 `$HOME` | 本插件 |
+| 扩展沙箱可写目录 | 内核沙箱内，追加可写目录 | dsh-write-protect、@morlay/dsh-sandbox-local |
+| 命令白名单，allow 含升级授权 | 沙箱外 | dsh-sandbox-allowlist |
+| 审批代答 | 沙箱外，返回 `allowed-once` | dsh-dhe-allow、dsh-auto-approval-plugin |
+
+差距不只在"少点几次弹窗"，而在**放行时失去多少隔离**：后三类要么让命令直接到沙箱外跑，要么把额外可写目录做成对所有命令生效的全局配置；本插件的可写根只对命中的那条命令生效，且匹配的是可执行文件而不是命令字符串。
+
+它只解决这一件事。需要 deny 规则、网络策略或按目录授权时，用上表里对应的方案更合适。
+
 ## 它解决什么问题
 
 DSH 的 `workspace-write` 沙箱只允许写三类位置：会话工作区、`/tmp`、系统临时目录（`os.tmpdir()`）。
@@ -54,7 +69,9 @@ tool-bash ──resolve(request)──▶ 原 resolve()            // workdir/ti
 
 要求：DSH Desktop（带 profile），macOS 或 Linux，bash 路径。
 
-### 从 npm 安装（发布后可用）
+### 从 npm 安装
+
+包已发布到 npm，推荐直接安装：
 
 ```text
 plugin_manager(action="install_bundle", target="dsh-whitelist-auto-approval")
@@ -62,7 +79,7 @@ plugin_manager(action="install_bundle", target="dsh-whitelist-auto-approval")
 
 或在 Plugins 页 **Add plugin** 里填包名 `dsh-whitelist-auto-approval`（可带版本，如 `dsh-whitelist-auto-approval@0.2.0`）。
 
-> npm 上还没有这个包时，请使用下面的 GitHub 或本地目录方式。
+要跟仓库最新提交、或从本地目录调试时，用下面的 GitHub / 本地目录方式。
 
 ### 从 GitHub 安装
 

@@ -10,6 +10,21 @@ writes ~/.xxx or ~/Library?            → add it to the allow-list; the kernel 
 everything else                        → unchanged behaviour, prompts as before
 ```
 
+## How it differs
+
+Several DSH plugins already remove the "writes outside the workspace" prompts. The useful axis is **where the command runs after it is allowed**:
+
+| Approach | Where the allowed command runs | Examples |
+|---|---|---|
+| **Swap the writable root per command (this plugin)** | inside the kernel sandbox, root = `$HOME` | this plugin |
+| Add writable roots to the sandbox | inside the kernel sandbox, extra directories | dsh-write-protect, @morlay/dsh-sandbox-local |
+| Command allow-list where `allow` grants escalation | outside the sandbox | dsh-sandbox-allowlist |
+| Answer the approval for you | outside the sandbox, `allowed-once` | dsh-dhe-allow, dsh-auto-approval-plugin |
+
+The difference is not how many prompts you skip, but **how much isolation you give up**: the last three either run the command outside the sandbox or add extra writable directories at config level for every command; this plugin's wider root applies only to the matched command, and it matches executables rather than command strings.
+
+That is all it does. If you need deny rules, network policy or per-directory grants, the matching option above is the better fit.
+
 ## The problem
 
 DSH's `workspace-write` sandbox only allows writes to the session workspace, `/tmp`, and the platform temp directory.
@@ -49,7 +64,9 @@ The model hands over a whole shell string, so the plugin only accepts *one simpl
 
 Requirements: DSH Desktop (profile-based), macOS or Linux, bash path.
 
-### From npm (after publishing)
+### From npm
+
+The package is published on npm:
 
 ```text
 plugin_manager(action="install_bundle", target="dsh-whitelist-auto-approval")
@@ -57,7 +74,7 @@ plugin_manager(action="install_bundle", target="dsh-whitelist-auto-approval")
 
 Or use **Add plugin** on the Plugins page with `dsh-whitelist-auto-approval` (optionally `dsh-whitelist-auto-approval@0.2.0`).
 
-> Until the package is published to npm, use the GitHub or local-directory option below.
+To track the latest commit or install from a local checkout, use the GitHub or local-directory option below.
 
 ### From GitHub
 
