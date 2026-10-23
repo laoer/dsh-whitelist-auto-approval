@@ -1,0 +1,19 @@
+# Per-command sandbox allow-list.
+#
+# This bundle does NOT replace the shell executor: it decorates the live
+# `ctx.shell.resolve()`, so the shipped `bash-sandbox` row stays enabled and a
+# failure here can never leave the composition without a shell.
+
+- insert:
+    - id: bash-sandbox-auto-approval
+      name: 'dsh-whitelist-auto-approval'
+      config:
+        audit: true
+        upgradeFromReadOnly: false
+        rules:
+          - name: lark-cli
+            command: lark-cli
+            grant: home
+          - name: gh
+            command: gh
+            grant: home

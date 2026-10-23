@@ -1,0 +1,44 @@
+{
+  "name": "dsh-whitelist-auto-approval",
+  "version": "0.1.0",
+  "description": "Per-command sandbox allow-list for the DSH bash tool: allow-listed CLIs run under a home-writable sandbox instead of prompting for danger-full-access.",
+  "license": "MIT",
+  "author": "Tim Gong",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/laoer/dsh-whitelist-auto-approval.git"
+  },
+  "homepage": "https://github.com/laoer/dsh-whitelist-auto-approval#readme",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "bundle",
+    "sandbox",
+    "approval",
+    "whitelist",
+    "allowlist",
+    "bash"
+  ],
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "matcher.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "icon": "./icon.svg",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

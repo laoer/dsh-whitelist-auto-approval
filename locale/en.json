@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Command Auto-Approval",
+    "description": "Runs allow-listed commands under a home-writable sandbox instead of prompting for danger-full-access."
+  }
+}
