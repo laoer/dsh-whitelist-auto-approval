@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -9,6 +9,9 @@ const BIN = new URL('./fixtures/bin/', import.meta.url).pathname
 
 function makeBin() {
   mkdirSync(BIN, { recursive: true })
+  // The symlink test below creates this entry; remove a leftover from a
+  // previous run so the suite is idempotent.
+  rmSync(join(BIN, 'lark-link'), { force: true })
   for (const name of ['lark-cli', 'other-cli']) {
     const file = join(BIN, name)
     writeFileSync(file, '#!/bin/sh\nexit 0\n')

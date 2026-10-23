@@ -49,15 +49,52 @@ The model hands over a whole shell string, so the plugin only accepts *one simpl
 
 Requirements: DSH Desktop (profile-based), macOS or Linux, bash path.
 
+### From npm (after publishing)
+
+```text
+plugin_manager(action="install_bundle", target="dsh-whitelist-auto-approval")
+```
+
+Or use **Add plugin** on the Plugins page with `dsh-whitelist-auto-approval` (optionally `dsh-whitelist-auto-approval@0.2.0`).
+
+> Until the package is published to npm, use the GitHub or local-directory option below.
+
+### From GitHub
+
 ```text
 plugin_manager(action="install_bundle", target="https://github.com/laoer/dsh-whitelist-auto-approval.git")
 ```
 
-Or use **Add plugin** on the Plugins page with the same address, or install from a local directory. If the bundle does not show up, fully quit and reopen DSH.
+### From a local directory
 
-## Configuration
+```text
+plugin_manager(action="install_bundle", target="/absolute/path/dsh-whitelist-auto-approval")
+```
 
-The default allow-list is `lark-cli` and `gh`. To change it, override the row in your profile patch (`~/.dsh/profiles/<profile>/cordis.patch.yml`). Note that an override replaces the whole `config` — restate every field you need:
+### Desktop and CLI
+
+- **Desktop**: Plugins → **Add plugin** accepts an npm package name, a Git address, a tarball, or an absolute local path.
+- **CLI**: `dsh plugin add dsh-whitelist-auto-approval` (or the Git address) works for CLI-managed profiles. The Desktop profile is application-owned and not exposed to CLI profile lookup; Desktop users should use the Plugins page or `plugin_manager`.
+
+If the bundle does not show up, fully quit and reopen DSH. The first install or update needs one restart so the Web client loads `client.js`; editing rules in the UI afterwards needs no restart.
+
+## Manage the allow-list in the UI (recommended)
+
+After restarting:
+
+1. Open **Settings** (the gear at the bottom-left);
+2. choose **Command Auto-Approval** in the left list;
+3. add, edit or delete rules on the right, then **Save**.
+
+The same form is also reachable from Plugins: sidebar **Plugins** → **Command Auto-Approval** → click the `bash-sandbox-auto-approval` row title (the `›` chevron).
+
+Saving writes the profile `cordis.patch.yml` and applies to the **next bash call** with no restart. The UI manages the rule table (`command` / `name` / `grant` / `root` / `deny` / `allow`); `audit`, `extraPath` and `trace` stay in the profile patch. Choosing `grant: full` shows a warning and requires an explicit acknowledgement.
+
+Editing the allow-list is always a user action: the plugin registers no agent tool that can change it.
+
+## Configuration (YAML, advanced)
+
+The default allow-list is `lark-cli` and `gh`. For fields the UI does not cover (`audit`, `upgradeFromReadOnly`, `extraPath`, `trace`) or for exact rule ordering, override the row in your profile patch (`~/.dsh/profiles/<profile>/cordis.patch.yml`). Note that an override replaces the whole `config` — restate every field you need:
 
 ```yaml
 - id: bash-sandbox-auto-approval
@@ -86,7 +123,9 @@ The default allow-list is `lark-cli` and `gh`. To change it, override the row in
 | `custom` | `workspace-write`, writable root `root` | tighten to a single directory |
 | `full` | `danger-full-access` | genuinely unconstrained work (automates the full-access approval) |
 
-Restart DSH after editing the config.
+Manual YAML edits need a restart. Saves from the UI apply immediately.
+
+> The first UI save writes a profile override containing the complete current config. Later changes to the bundle's default rules no longer override that row; to return to the defaults, delete the `config` section of `bash-sandbox-auto-approval` from the profile patch.
 
 ## Verify
 
@@ -100,6 +139,8 @@ touch ~/whitelist-probe          # still denied: file access denied under worksp
 
 The last line is the control: the plugin widens the allow-list, not the session.
 
+UI check: add or remove a rule in **Settings → Command Auto-Approval** (or the Plugins row page), save, and run the commands above immediately — no restart; the next bash call uses the new rules.
+
 ## Security
 
 1. **The sandbox never restricted reads or the network.** Under `workspace-write` any command can already read `~/.ssh` or the tokens in `~/.lark-cli`. This plugin adds write capability, not read isolation.
@@ -108,19 +149,49 @@ The last line is the control: the plugin widens the allow-list, not the session.
 4. **`full` automates the full-access approval.** Use it deliberately.
 5. **Aliases and wrappers are not matched** (`alias`, `env`, `timeout`, `npx …`), by design.
 6. It only answers *"may this command's sandbox be widened"*, never *"should this command run"*.
+7. **The UI adds no authority surface.** It writes the same profile `cordis.patch.yml` you could edit by hand; there is no new HTTP route and no agent tool. `full` rules require an explicit user acknowledgement.
 
 ## Limitations
 
 - **One writable root.** `home` replaces `workspaceRoot`, so a matched command loses write access to the session workspace. Only matters when the workspace lives outside `$HOME`.
 - **bash only.** Windows uses `pwsh-sandbox`; the row is disabled there.
 - **Depends on `ctx.shell.resolve()`.** A future DSH release that changes the executor contract degrades the plugin to "no grants" — it does not break execution.
-- **No graphical configuration.** Rules live in YAML; the bundle can still be toggled on the Plugins page.
+- **The UI manages `rules` only.** `audit`, `upgradeFromReadOnly`, `extraPath` and `trace` stay in YAML; the UI blocks duplicate commands (YAML can still order them by hand).
 
 ## Development
 
 ```bash
 node --test "test/*.test.mjs"
 ```
+
+## Releasing (maintainers)
+
+1. Check before publishing:
+
+   ```bash
+   node --test "test/*.test.mjs"
+   npm pack --dry-run
+   ```
+
+2. Bump the version, commit, and tag:
+
+   ```bash
+   npm version patch   # or minor / edit package.json by hand
+   git push origin main --tags
+   ```
+
+3. Publish manually:
+
+   ```bash
+   npm login          # if not signed in
+   npm publish        # unscoped: public by default
+   npm view dsh-whitelist-auto-approval version
+   ```
+
+4. If you switch to a scoped name (for example `@laoer/dsh-whitelist-auto-approval`), update three places:
+   `package.json` `name`, the `cordis.patch.yml` row `name`, and `client.js` `PACKAGE` / `UI_KEY`.
+   The client module id must equal the package name. Publish a scoped package with `npm publish --access public`
+   and re-verify both the Settings and Plugins entries.
 
 ## License
 

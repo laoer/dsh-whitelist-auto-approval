@@ -13,9 +13,10 @@
  * escalation dance never starts. Every other call keeps the standing policy
  * and the normal approval prompt.
  *
- * This plugin does not replace `ctx.shell`, register a service, or ship a
- * config schema. A failure here can therefore never leave the composition
- * without a shell — the worst case is "no command is granted".
+ * This plugin does not replace `ctx.shell` or register a service. A failure
+ * here can therefore never leave the composition without a shell — the worst
+ * case is "no command is granted". The optional `Config` schema adds the
+ * management page; without it the plugin still runs from raw YAML config.
  *
  * The sandbox governs file *writes* only: reads and network are unrestricted
  * under every mode. So the difference between this grant and `danger-full-access`
@@ -28,6 +29,13 @@ import { appendFileSync } from 'node:fs'
 import { createMatcher } from './matcher.js'
 
 /**
+ * The row's `Config` schema. Exported from a separate module because it pulls
+ * in the vendored schemastery copy and belongs to the settings surface, not to
+ * the shell decoration.
+ */
+export { Config } from './schema.js'
+
+/**
  * Points from an installed wrapper back to the function it wrapped, so a
  * reload flattens the chain instead of stacking another layer. Stacking would
  * make a later layer see an already-granted `workspaceRoot` and mistake the
@@ -36,6 +44,22 @@ import { createMatcher } from './matcher.js'
 const ORIGINAL = Symbol.for('dsh-whitelist-auto-approval.original')
 
 const MAX_LOGGED_COMMAND = 500
+/** Stable identity for "no rules", so the lazy compiler does not rebuild on every call. */
+const NO_RULES = []
+
+/**
+ * Read the rules out of the resolved config.
+ *
+ * A `.volatile()` field arrives as a stable reference with `get()` rather than
+ * as the plain array. The loader updates that reference in place when the
+ * settings page saves, so every call must read through it instead of keeping
+ * the value seen at `apply` time. A plain array is accepted for tests, older
+ * configs, and deployments where no schema was resolved.
+ */
+function readRules(config) {
+  const value = typeof config?.rules?.get === 'function' ? config.rules.get() : config?.rules
+  return Array.isArray(value) ? value : NO_RULES
+}
 
 /**
  * @param {import('@deepseek-ai/cordis').Context} ctx
@@ -50,7 +74,7 @@ const MAX_LOGGED_COMMAND = 500
 export function apply(ctx, config = {}) {
   const audit = config.audit !== false
   const upgradeFromReadOnly = config.upgradeFromReadOnly === true
-  const rules = Array.isArray(config.rules) ? config.rules : []
+  const initialRules = readRules(config)
   const traceFile = typeof config.trace === 'string' && config.trace.trim() !== '' ? config.trace.trim() : undefined
 
   /** Opt-in JSONL journal, for when the Host log is not reachable. */
@@ -63,16 +87,51 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  trace('apply', { rules: rules.length, path: process.env.PATH ?? '' })
+  trace('apply', { rules: initialRules.length, path: process.env.PATH ?? '' })
 
-  const match = createMatcher(rules, {
+  const matcherOptions = {
     extraPath: config.extraPath ?? [],
     onDecision: (info) => trace('decision', info),
     onWarning: (message) => {
       trace('warning', { message })
       ctx.logger.warn(`[auto-approval] ${message}`)
     },
-  })
+  }
+
+  // Rules are compiled lazily and rebuilt when the volatile reference changes.
+  // Keeping this out of `apply` is what lets a settings save take effect for the
+  // next bash call without remounting the plugin.
+  let compiledSource
+  let compiledMatcher
+
+  function matcherFor() {
+    const rules = readRules(config)
+    if (rules !== compiledSource) {
+      compiledSource = rules
+      compiledMatcher = createMatcher(rules, matcherOptions)
+      trace('rules', { count: rules.length })
+    }
+    return compiledMatcher
+  }
+
+  // This plugin owns a configuration page (the `plugins.row.config` client
+  // cell), so tell the settings service not to project a second, automatic form
+  // for the same entry. This is an optional service and a failure here must
+  // never affect the shell decorator.
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['settings'], (scope) => {
+      const settings = scope.settings
+      if (settings === undefined || typeof settings.configure !== 'function' || ctx.fiber === undefined) return
+      scope.effect(() => {
+        try {
+          return settings.configure({ auto: false }, ctx.fiber)
+        } catch (error) {
+          ctx.logger.warn(`[auto-approval] settings.configure skipped: ${String(error)}`)
+          return () => {}
+        }
+      })
+    })
+  }
 
   // The injected form the shipped plugins use; it also re-runs if the executor
   // instance is replaced.
@@ -105,7 +164,7 @@ export function apply(ctx, config = {}) {
           if (policy.mode === 'danger-full-access') return spec
           if (policy.mode === 'read-only' && !upgradeFromReadOnly) return spec
 
-          const decision = match(request?.command ?? '', {
+          const decision = matcherFor()(request?.command ?? '', {
             workspaceRoot: policy.workspaceRoot,
             workdir: spec.workdir,
           })

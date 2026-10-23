@@ -54,23 +54,52 @@ tool-bash ──resolve(request)──▶ 原 resolve()            // workdir/ti
 
 要求：DSH Desktop（带 profile），macOS 或 Linux，bash 路径。
 
-在 DSH 会话里让 agent 执行：
+### 从 npm 安装（发布后可用）
+
+```text
+plugin_manager(action="install_bundle", target="dsh-whitelist-auto-approval")
+```
+
+或在 Plugins 页 **Add plugin** 里填包名 `dsh-whitelist-auto-approval`（可带版本，如 `dsh-whitelist-auto-approval@0.2.0`）。
+
+> npm 上还没有这个包时，请使用下面的 GitHub 或本地目录方式。
+
+### 从 GitHub 安装
 
 ```text
 plugin_manager(action="install_bundle", target="https://github.com/laoer/dsh-whitelist-auto-approval.git")
 ```
 
-或在 Plugins 页 **Add plugin** 里填同一个地址。也可以从本地目录安装：
+### 从本地目录安装
 
 ```text
 plugin_manager(action="install_bundle", target="/绝对路径/dsh-whitelist-auto-approval")
 ```
 
-装完如果 `Plugins` 页里没看到这个 bundle，完全退出 DSH 再打开一次。
+### Desktop 与 CLI
 
-## 配置
+- **Desktop**：Plugins → **Add plugin** 支持 npm 包名、Git 地址、tarball、本地绝对路径。
+- **CLI**：`dsh plugin add dsh-whitelist-auto-approval`（或 Git 地址）适用于 CLI 管理的 profile。Desktop 的 profile 由应用持有，不暴露给 CLI profile 查找；Desktop 用户请使用 Plugins 页或上面的 `plugin_manager`。
 
-默认白名单是 `lark-cli` 和 `gh`。增删规则：编辑 profile 的 patch 文件（`~/.dsh/profiles/<profile>/cordis.patch.yml`），覆盖本插件的 row——**同 id 的 `config` 是整段替换，不是合并**，所以要把需要的字段写全：
+装完如果 `Plugins` 页里没看到这个 bundle，完全退出 DSH 再打开一次。首次安装或更新本插件后需要重启一次，让 Web 端加载 `client.js`；之后在 UI 里改规则不需要重启。
+
+## 在 UI 中管理白名单（推荐）
+
+重启后：
+
+1. 打开左下角 **设置**；
+2. 在左侧列表点 **命令自动放行**；
+3. 在右侧规则表增删改规则，点 **保存**。
+
+同一个表单也能从 Plugins 页进入：侧边栏 **Plugins** → **Command Auto-Approval** → 点 `bash-sandbox-auto-approval` 这一行的标题（右侧有 `›` 箭头）。
+
+保存会写入 profile 的 `cordis.patch.yml`，并**对下一次 bash 调用立即生效**，无需重启。UI 管理规则表（`command` / `name` / `grant` / `root` / `deny` / `allow`）；`audit`、`extraPath`、`trace` 等高级项仍在 profile patch 里。选 `grant: full` 时会显示警告并要求显式勾选确认。
+
+白名单修改始终是用户操作：本插件不注册任何可改白名单的 agent 工具。
+
+## 配置（YAML，高级用法）
+
+默认白名单是 `lark-cli` 和 `gh`。UI 覆盖不到的字段（`audit`、`upgradeFromReadOnly`、`extraPath`、`trace`）或需要精调顺序时，仍可直接编辑 profile 的 patch 文件（`~/.dsh/profiles/<profile>/cordis.patch.yml`），覆盖本插件的 row——**同 id 的 `config` 是整段替换，不是合并**，所以要把需要的字段写全：
 
 ```yaml
 - id: bash-sandbox-auto-approval
@@ -109,7 +138,9 @@ plugin_manager(action="install_bundle", target="/绝对路径/dsh-whitelist-auto
 | `custom` | `workspace-write`，可写根 = `root` | 只需要单个目录时收紧 |
 | `full` | `danger-full-access` | 确实需要无约束（等于把"批准完全权限"自动化） |
 
-改完配置后重启 DSH 生效。
+手改 YAML 后需要重启 DSH 生效；通过 UI 保存则即时生效。
+
+> 第一次在 UI 里保存会生成一份 profile override（包含当前完整 config）。之后 bundle 自带的默认规则变化不会再自动覆盖这份 override；需要回到默认时，删除 profile patch 里 `bash-sandbox-auto-approval` 的 `config` 段即可。
 
 ## 验证
 
@@ -123,6 +154,8 @@ touch ~/whitelist-probe          # 期望仍被拒：file access denied under wo
 
 最后一条是对照组：插件只放行白名单，没有把会话变成完全权限。
 
+UI 验证：在 **设置 → 命令自动放行**（或 Plugins 行页）添加或删除一条规则并保存，然后**立刻**执行上面的命令（不需要重启）；保存后的下一次 bash 调用就会使用新规则。
+
 ## 安全边界（请务必读）
 
 1. **沙箱本来就不限制读和网络。** `workspace-write` 下任何命令都能读 `~/.ssh`、`~/.lark-cli` 里的 token。本插件增加的是**写**的能力，不是读的隔离。
@@ -131,23 +164,27 @@ touch ~/whitelist-probe          # 期望仍被拒：file access denied under wo
 4. **`full` 等于自动批准完全权限**，只在明确需要时用。
 5. **别名/包装器不放行**：`alias`、shell 函数、`env`、`timeout`、`npx` 包一层的写法都不会命中，会正常弹窗。这是刻意的。
 6. 它只回答"这条命令的沙箱边界能不能放宽"，**不回答"这条命令该不该跑"**。
+7. **UI 不新增权限面**：保存写入的就是 profile 的 `cordis.patch.yml`，与手工编辑同一份文件；没有新增 HTTP 路由或 agent 工具。`full` 规则需要用户显式确认。
 
 ## 已知限制
 
 - **只有一个可写根**：`home` 会覆盖 `workspaceRoot`，所以命中命令会失去对**会话工作区**的写权限。只在"工作区在 `$HOME` 之外"时才有影响；需要同时写两边的命令不适合加白名单。
 - **只处理 bash**：Windows 走 `pwsh-sandbox`，本插件的 row 在 win32 下禁用。
 - **依赖 `ctx.shell.resolve()` 这个方法名**：DSH 升级若改变执行器契约，插件会退化为"不放行"，不会破坏执行。
-- **没有图形化配置**：插件不声明 Config schema，规则走 YAML。`Plugins` 页仍可开关这个 bundle。
+- **UI 只管理 `rules`**：`audit`、`upgradeFromReadOnly`、`extraPath`、`trace` 仍在 YAML；同一 `command` 的重复规则在 UI 中被阻止（YAML 仍可按顺序手写）。
 - **不能替代人工判断**。
 
 ## 目录
 
 ```
 dsh-whitelist-auto-approval/
-├── package.json          # bundle 清单
+├── package.json          # bundle + dsh.client 清单
 ├── cordis.patch.yml      # 插入 bash-sandbox-auto-approval 这一行
-├── index.js              # 装饰 ctx.shell.resolve()
+├── index.js              # 装饰 ctx.shell.resolve()，读取 volatile rules
+├── schema.js             # Config schema（rules 为 volatile）
+├── client.js             # Web UI：Settings 页 + plugins.row.config 规则表
 ├── matcher.js            # 词法分析 / PATH 解析 / 规则匹配
+├── vendor/               # vendored schemastery + cosmokit（MIT）
 ├── locale/{en,zh}.json
 ├── icon.svg
 └── test/                 # node --test，无需安装 DSH
@@ -158,6 +195,35 @@ dsh-whitelist-auto-approval/
 ```bash
 node --test "test/*.test.mjs"
 ```
+
+## 维护者发布
+
+1. 发布前检查：
+
+   ```bash
+   node --test "test/*.test.mjs"
+   npm pack --dry-run
+   ```
+
+2. 更新版本并提交/打 tag：
+
+   ```bash
+   npm version patch   # 或 minor / 手动改 package.json
+   git push origin main --tags
+   ```
+
+3. 手动发布到 npm：
+
+   ```bash
+   npm login          # 如未登录
+   npm publish        # 未加 scope，默认 public
+   npm view dsh-whitelist-auto-approval version
+   ```
+
+4. 如果改成 scoped 包（如 `@laoer/dsh-whitelist-auto-approval`），必须同步三处：
+   `package.json` 的 `name`、`cordis.patch.yml` 里 row 的 `name`、`client.js` 的
+   `PACKAGE` / `UI_KEY`——**client 模块 id 必须等于包名**；并重新验证 Settings 与 Plugins 两个入口。
+   发布 scoped 包时用 `npm publish --access public`。
 
 ## License
 

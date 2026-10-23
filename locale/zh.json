@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "命令自动放行",
-    "description": "让白名单内的命令在可写用户目录的沙箱下运行，不再弹 danger-full-access 授权。"
+    "description": "让白名单内的命令在可写用户目录的沙箱下运行，不再弹 danger-full-access 授权。规则可在设置页或插件行配置页中管理。"
   }
 }

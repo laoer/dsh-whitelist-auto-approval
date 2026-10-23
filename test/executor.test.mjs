@@ -105,3 +105,30 @@ test('apply: no rules means no grants', () => {
   apply(ctx, {})
   assert.deepEqual(shell.resolve({ command: 'lark-cli x', sandboxPolicy: policy }).sandboxPolicy, policy)
 })
+
+test('apply: volatile rules update without re-applying the plugin', () => {
+  const { ctx, shell } = harness()
+  let source = [{ command: 'lark-cli', grant: 'home' }]
+  apply(ctx, { extraPath: [BIN], rules: { get: () => source } })
+  const decorated = shell.resolve
+
+  assert.deepEqual(shell.resolve({ command: 'lark-cli x', sandboxPolicy: policy }).sandboxPolicy, {
+    mode: 'workspace-write',
+    workspaceRoot: homedir(),
+    sessionId: 's1',
+  })
+
+  // The settings page replaces the value inside the same volatile reference.
+  source = []
+  assert.deepEqual(shell.resolve({ command: 'lark-cli x', sandboxPolicy: policy }).sandboxPolicy, policy)
+
+  source = [{ command: 'lark-cli', grant: 'custom', root: '/work/only' }]
+  assert.deepEqual(shell.resolve({ command: 'lark-cli x', sandboxPolicy: policy }).sandboxPolicy, {
+    mode: 'workspace-write',
+    workspaceRoot: '/work/only',
+    sessionId: 's1',
+  })
+
+  // Same decorator generation throughout: only the compiled rules changed.
+  assert.equal(shell.resolve, decorated)
+})
