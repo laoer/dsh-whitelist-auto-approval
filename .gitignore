@@ -10,6 +10,9 @@ test/fixtures/
 # internal design notes: contains machine-specific paths and session details
 DESIGN.md
 
+# maintainer-only release notes (local workflow, not for users)
+RELEASING.md
+
 # OS / editor noise
 .DS_Store
 *.log
