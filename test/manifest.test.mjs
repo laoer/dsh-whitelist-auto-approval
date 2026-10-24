@@ -10,7 +10,7 @@ const client = await readFile(new URL('client.js', root), 'utf8')
 
 test('manifest: names the bundle and the client half', () => {
   assert.equal(pkg.name, 'dsh-whitelist-auto-approval')
-  assert.equal(pkg.version, '0.3.0')
+  assert.equal(pkg.version, '0.3.0-beta')
   assert.equal(pkg.type, 'module')
   assert.equal(pkg.exports['.'], './index.js')
   assert.equal(pkg.exports['./client'], './client.js')
