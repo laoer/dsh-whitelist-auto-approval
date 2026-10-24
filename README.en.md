@@ -181,35 +181,6 @@ UI check: add or remove a rule in **Settings → Command Auto-Approval** (or the
 node --test "test/*.test.mjs"
 ```
 
-## Releasing (maintainers)
-
-1. Check before publishing:
-
-   ```bash
-   node --test "test/*.test.mjs"
-   npm pack --dry-run
-   ```
-
-2. Bump the version, commit, and tag:
-
-   ```bash
-   npm version patch   # or minor / edit package.json by hand
-   git push origin main --tags
-   ```
-
-3. Publish manually:
-
-   ```bash
-   npm login          # if not signed in
-   npm publish        # unscoped: public by default
-   npm view dsh-whitelist-auto-approval version
-   ```
-
-4. If you switch to a scoped name (for example `@laoer/dsh-whitelist-auto-approval`), update three places:
-   `package.json` `name`, the `cordis.patch.yml` row `name`, and `client.js` `PACKAGE` / `UI_KEY`.
-   The client module id must equal the package name. Publish a scoped package with `npm publish --access public`
-   and re-verify both the Settings and Plugins entries.
-
 ## License
 
 [MIT](./LICENSE)

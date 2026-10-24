@@ -213,35 +213,6 @@ dsh-whitelist-auto-approval/
 node --test "test/*.test.mjs"
 ```
 
-## 维护者发布
-
-1. 发布前检查：
-
-   ```bash
-   node --test "test/*.test.mjs"
-   npm pack --dry-run
-   ```
-
-2. 更新版本并提交/打 tag：
-
-   ```bash
-   npm version patch   # 或 minor / 手动改 package.json
-   git push origin main --tags
-   ```
-
-3. 手动发布到 npm：
-
-   ```bash
-   npm login          # 如未登录
-   npm publish        # 未加 scope，默认 public
-   npm view dsh-whitelist-auto-approval version
-   ```
-
-4. 如果改成 scoped 包（如 `@laoer/dsh-whitelist-auto-approval`），必须同步三处：
-   `package.json` 的 `name`、`cordis.patch.yml` 里 row 的 `name`、`client.js` 的
-   `PACKAGE` / `UI_KEY`——**client 模块 id 必须等于包名**；并重新验证 Settings 与 Plugins 两个入口。
-   发布 scoped 包时用 `npm publish --access public`。
-
 ## License
 
 [MIT](./LICENSE)
