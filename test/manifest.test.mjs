@@ -10,7 +10,7 @@ const client = await readFile(new URL('client.js', root), 'utf8')
 
 test('manifest: names the bundle and the client half', () => {
   assert.equal(pkg.name, 'dsh-whitelist-auto-approval')
-  assert.equal(pkg.version, '0.2.1')
+  assert.equal(pkg.version, '0.3.0')
   assert.equal(pkg.type, 'module')
   assert.equal(pkg.exports['.'], './index.js')
   assert.equal(pkg.exports['./client'], './client.js')
@@ -30,7 +30,7 @@ test('manifest: the client half is a web module that waits for the Plugins page'
 })
 
 test('manifest: every runtime file ships and the schema is vendored', () => {
-  for (const required of ['index.js', 'matcher.js', 'schema.js', 'client.js', 'cordis.patch.yml', 'icon.svg']) {
+  for (const required of ['index.js', 'matcher.js', 'overlay.js', 'schema.js', 'client.js', 'cordis.patch.yml', 'icon.svg']) {
     assert.ok(pkg.files.includes(required), `${required} is missing from files`)
   }
   assert.ok(pkg.files.includes('locale/*.json'))

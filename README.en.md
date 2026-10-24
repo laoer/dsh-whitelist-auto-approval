@@ -16,8 +16,8 @@ Several DSH plugins already remove the "writes outside the workspace" prompts. T
 
 | Approach | Where the allowed command runs | Examples |
 |---|---|---|
-| **Swap the writable root per command (this plugin)** | inside the kernel sandbox, root = `$HOME` | this plugin |
-| Add writable roots to the sandbox | inside the kernel sandbox, extra directories | dsh-write-protect, @morlay/dsh-sandbox-local |
+| **Add a writable root per command (this plugin)** | inside the kernel sandbox, workspace kept and `$HOME` added | this plugin |
+| Add writable roots at config level | inside the kernel sandbox, for every command | dsh-write-protect, @morlay/dsh-sandbox-local |
 | Command allow-list where `allow` grants escalation | outside the sandbox | dsh-sandbox-allowlist |
 | Answer the approval for you | outside the sandbox, `allowed-once` | dsh-dhe-allow, dsh-auto-approval-plugin |
 
@@ -31,7 +31,7 @@ DSH's `workspace-write` sandbox only allows writes to the session workspace, `/t
 
 `lark-cli` refreshes its token under `~/Library/Application Support/lark-cli/` and keeps caches, locks and logs under `~/.lark-cli/`. Both are outside the workspace, so the command is denied, the model retries with `sandbox_permissions: danger-full-access`, and you get an approval prompt every time — or you give up file isolation for the entire session.
 
-This plugin replaces that first denial with a wider *write scope for that one call*: `workspace-write` with `$HOME` as the writable root.
+On macOS/Linux this plugin replaces that first denial with a wider *write scope for that one call*: the session workspace stays writable and `$HOME` is appended as a second root. On Windows (or when the runner cannot be recognized) it falls back to the old behavior: `$HOME` replaces the writable root.
 
 ## How it works
 
@@ -40,16 +40,25 @@ Every bash call asks `ctx.shell.resolve(request)` for its `sandboxPolicy`. The p
 ```
 tool-bash ──resolve(request)──▶ original resolve()   // workdir / timeout / policy
                                 ├─ match the command
-                                ├─ hit    → sandboxPolicy = { mode: 'workspace-write', workspaceRoot: '$HOME' }
+                                ├─ hit    → keep workspaceRoot, add extraWritableRoots = ['$HOME']
                                 └─ no hit → returned unchanged
-                              └─ execute() stays with the shipped executor
+                              └─ ctx.sandbox.confine() ──▶ shipped provider builds argv
+                                                           └─ overlay appends the extra root
 ```
+
+The overlay appends per runner instead of rebuilding the profile:
+
+- **Seatbelt (macOS):** append `(allow file-write* (subpath "$HOME"))` to the `-p` profile; SBPL's last match wins.
+- **bwrap (Linux):** insert `--bind $HOME $HOME` before `--`.
+- **Landlock (Linux):** insert `--rw $HOME` before `--`.
+- An unknown runner, a missing `-p`/`--`, a missing path or an already-granted root leaves the shipped argv untouched and logs one warning.
 
 Design choices:
 
-- **It does not replace `ctx.shell`.** The worst case is "no rule matched" — bash keeps working.
+- **It replaces no official row.** It decorates `ctx.shell.resolve()` and `ctx.sandbox.confine()`. The worst case is "the extra root was not added" — bash and the sandbox keep working.
 - **Only the write scope changes.** Approval policy, filesystem tools and the session mode are untouched.
-- **Fail safe.** Unknown syntax, invalid config or a bad regex falls back to the normal sandbox and approval path. Mistakes cost extra prompts, never extra permission.
+- **Fail safe.** Unknown syntax, invalid config, a bad regex or an unrecognized runner falls back to the normal sandbox and approval path. Mistakes cost extra prompts, never extra permission.
+- **Windows does not use the overlay.** It falls back to replacing `workspaceRoot`; the ACL sandbox has no argv/profile to append to.
 
 ## Matching
 
@@ -72,7 +81,7 @@ The package is published on npm:
 plugin_manager(action="install_bundle", target="dsh-whitelist-auto-approval")
 ```
 
-Or use **Add plugin** on the Plugins page with `dsh-whitelist-auto-approval` (optionally `dsh-whitelist-auto-approval@0.2.1`).
+Or use **Add plugin** on the Plugins page with `dsh-whitelist-auto-approval` (optionally `dsh-whitelist-auto-approval@0.3.0`).
 
 To track the latest commit or install from a local checkout, use the GitHub or local-directory option below.
 
@@ -136,7 +145,7 @@ The default allow-list is `lark-cli` and `gh`. For fields the UI does not cover 
 
 | `grant` | Actual policy | Use for |
 |---|---|---|
-| `home` | `workspace-write`, writable root `$HOME` | CLIs that write their own state in your home (recommended) |
+| `home` | macOS/Linux: `workspace-write`, workspace kept + `$HOME` appended; Windows or no overlay: writable root `$HOME` | CLIs that write their own state in your home and also write into the workspace (recommended) |
 | `custom` | `workspace-write`, writable root `root` | tighten to a single directory |
 | `full` | `danger-full-access` | genuinely unconstrained work (automates the full-access approval) |
 
@@ -156,6 +165,10 @@ touch ~/whitelist-probe          # still denied: file access denied under worksp
 
 The last line is the control: the plugin widens the allow-list, not the session.
 
+On macOS/Linux the matched command keeps the session workspace too: refreshing a token and
+writing a download/export back into `./` in the same command is no longer denied (`home` is
+now "workspace + `$HOME`").
+
 UI check: add or remove a rule in **Settings → Command Auto-Approval** (or the Plugins row page), save, and run the commands above immediately — no restart; the next bash call uses the new rules.
 
 ## Security
@@ -170,8 +183,11 @@ UI check: add or remove a rule in **Settings → Command Auto-Approval** (or the
 
 ## Limitations
 
-- **One writable root.** `home` replaces `workspaceRoot`, so a matched command loses write access to the session workspace. Only matters when the workspace lives outside `$HOME`.
-- **bash only.** Windows uses `pwsh-sandbox`; the row is disabled there.
+- **Two writable roots on macOS/Linux, one on Windows.** On macOS/Linux a `home` grant keeps the session workspace and appends `$HOME`; on Windows (or an unrecognized runner) it still replaces `workspaceRoot`, so a matched command loses write access to the session workspace.
+- **The overlay is best effort.** It only appends to the shipped runner profile; an unknown runner, a changed argv shape or a missing path leaves the shipped confinement untouched and logs one warning. The result is a missing extra root, not a wider sandbox.
+- **`write`/`edit` are not covered.** The overlay only widens the sandboxed command; writing `$HOME` through the file tools still follows the session policy.
+- **Do not mix it with a plugin that owns the `sandbox` provider.** The overlay appends its allow to the final argv/profile; a plugin that appends its own deny in the same profile can end up on the wrong side of the order. This plugin assumes the official `dsh-sandbox-local` provider.
+- **bash only.** Windows uses `pwsh-sandbox`; the overlay is not installed there and `home` falls back to replacing the root.
 - **Depends on `ctx.shell.resolve()`.** A future DSH release that changes the executor contract degrades the plugin to "no grants" — it does not break execution.
 - **The UI manages `rules` only.** `audit`, `upgradeFromReadOnly`, `extraPath` and `trace` stay in YAML; the UI blocks duplicate commands (YAML can still order them by hand).
 

@@ -180,15 +180,15 @@ function compileRegexes(list, label, field, warn) {
 
 function compileGrant(raw, label, home, warn) {
   const grant = String(raw.grant ?? 'home')
-  if (grant === 'full') return { mode: 'danger-full-access' }
-  if (grant === 'home') return { mode: 'workspace-write', workspaceRoot: canonicalPath(home) }
+  if (grant === 'full') return { kind: 'full', mode: 'danger-full-access' }
+  if (grant === 'home') return { kind: 'home', mode: 'workspace-write', workspaceRoot: canonicalPath(home) }
   if (grant === 'custom') {
     const root = expandHome(String(raw.root ?? '').trim(), home)
     if (root === '' || !isAbsolute(root)) {
       warn(`rule "${label}": grant "custom" requires an absolute root (got ${JSON.stringify(String(raw.root ?? ''))})`)
       return undefined
     }
-    return { mode: 'workspace-write', workspaceRoot: canonicalPath(root) }
+    return { kind: 'custom', mode: 'workspace-write', workspaceRoot: canonicalPath(root) }
   }
   warn(`rule "${label}": unknown grant ${JSON.stringify(grant)} (expected home, full, or custom)`)
   return undefined

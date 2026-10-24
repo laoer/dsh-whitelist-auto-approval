@@ -16,8 +16,8 @@ DSH 上已有一批解决"工作区外写入"的插件。按**放行后命令在
 
 | 做法 | 放行后命令在哪执行 | 代表 |
 |---|---|---|
-| **按命令换可写根（本插件）** | 内核沙箱内，可写根换成 `$HOME` | 本插件 |
-| 扩展沙箱可写目录 | 内核沙箱内，追加可写目录 | dsh-write-protect、@morlay/dsh-sandbox-local |
+| **按命令追加可写根（本插件）** | 内核沙箱内，工作区保留，`$HOME` 作为第二根追加 | 本插件 |
+| 扩展沙箱可写目录（配置级） | 内核沙箱内，配置的目录对所有命令生效 | dsh-write-protect、@morlay/dsh-sandbox-local |
 | 命令白名单，allow 含升级授权 | 沙箱外 | dsh-sandbox-allowlist |
 | 审批代答 | 沙箱外，返回 `allowed-once` | dsh-dhe-allow、dsh-auto-approval-plugin |
 
@@ -36,25 +36,36 @@ DSH 的 `workspace-write` 沙箱只允许写三类位置：会话工作区、`/t
 3. 你每次都要点一次授权；
 4. 如果干脆把会话切成"完全权限"，那整个会话都失去文件隔离。
 
-本插件把第 1 步变成"这次调用的沙箱边界换成 `$HOME`"，于是第 2、3 步不再发生。
+本插件在 macOS / Linux 上把第 1 步变成"这次调用的可写根 = 会话工作区 + `$HOME`"：
+token 能写，命令自己的下载/导出也能写回工作区，于是第 2、3 步不再发生。
+Windows（或无法识别 runner 的 provider）退回旧行为：把可写根换成 `$HOME`。
 
 ## 工作原理
 
-DSH 里每条 bash 命令都会经过 `ctx.shell.resolve(request)` 拿到本次调用的 `sandboxPolicy`。插件在 `ctx.inject(['shell'])` 里给这个方法套一层：
+DSH 里每条 bash 命令都会经过 `ctx.shell.resolve(request)` 拿到 `sandboxPolicy`，再由 `ctx.sandbox.confine()` 翻译成 runner 的 argv/profile。插件在这两个位置各装饰一层（macOS / Linux）：
 
 ```
 tool-bash ──resolve(request)──▶ 原 resolve()            // workdir/timeout/policy 原逻辑
                                 ├─ 匹配命令（见下）
-                                ├─ 命中 → sandboxPolicy = { mode: 'workspace-write', workspaceRoot: '$HOME' }
+                                ├─ 命中 → 保留 workspaceRoot，追加 extraWritableRoots = ['$HOME']
                                 └─ 未命中/异常 → 原样返回
-                              └─ execute() 由原执行器完成，沙箱照常生效
+                              └─ ctx.sandbox.confine() ──▶ 原 provider 生成 argv
+                                                           └─ overlay：在 profile/参数末尾追加可写根
 ```
+
+overlay 按 runner 追加，不重建 profile：
+
+- **Seatbelt**（macOS）：在 `-p` 的 profile 末尾追加 `(allow file-write* (subpath "$HOME"))`；SBPL 后匹配生效。
+- **bwrap**（Linux）：在 `--` 前插 `--bind $HOME $HOME`。
+- **Landlock**（Linux）：在 `--` 前插 `--rw $HOME`。
+- 识别不出 runner、缺 `-p`/`--`、路径不存在、或该根已经在 profile 里时，原样返回并告警一次。
 
 几点设计上的取舍：
 
-- **不替换 `ctx.shell`**，只装饰方法。插件出问题时最坏结果是"规则不生效"，bash 本身照常工作。
+- **不替换任何官方 row**，只装饰 `ctx.shell.resolve()` 和 `ctx.sandbox.confine()`。overlay 失败时最坏是"这次没加上根"，bash 和沙箱本身照常工作。
 - **只放宽"写哪里"**，不改审批策略、不改文件系统工具、不改会话模式。
-- **失败安全**：任何解析不确定、配置非法、正则写错，都退回原沙箱 + 原审批——宁可多弹窗，不会少弹窗。
+- **失败安全**：任何解析不确定、配置非法、正则写错、runner 不认识，都退回原沙箱 + 原审批——宁可多弹窗，不会少弹窗。
+- **Windows 不适用 overlay**：退回旧行为（`workspaceRoot` 换成 `$HOME`），因为 ACL 沙箱没有可追加的 argv/profile。
 
 ## 匹配规则
 
@@ -77,7 +88,7 @@ tool-bash ──resolve(request)──▶ 原 resolve()            // workdir/ti
 plugin_manager(action="install_bundle", target="dsh-whitelist-auto-approval")
 ```
 
-或在 Plugins 页 **Add plugin** 里填包名 `dsh-whitelist-auto-approval`（可带版本，如 `dsh-whitelist-auto-approval@0.2.1`）。
+或在 Plugins 页 **Add plugin** 里填包名 `dsh-whitelist-auto-approval`（可带版本，如 `dsh-whitelist-auto-approval@0.3.0`）。
 
 要跟仓库最新提交、或从本地目录调试时，用下面的 GitHub / 本地目录方式。
 
@@ -151,8 +162,8 @@ plugin_manager(action="install_bundle", target="/绝对路径/dsh-whitelist-auto
 
 | 值 | 实际策略 | 适用 |
 |---|---|---|
-| `home` | `workspace-write`，可写根 = `$HOME` | 写自己家目录的 CLI（推荐） |
-| `custom` | `workspace-write`，可写根 = `root` | 只需要单个目录时收紧 |
+| `home` | macOS/Linux：`workspace-write`，工作区保留 + `$HOME` 追加为第二根；Windows 或无 overlay：可写根换成 `$HOME` | 写自己家目录、同时还要往工作区落盘的 CLI（推荐） |
+| `custom` | `workspace-write`，可写根换成 `root` | 只需要单个目录时收紧 |
 | `full` | `danger-full-access` | 确实需要无约束（等于把"批准完全权限"自动化） |
 
 手改 YAML 后需要重启 DSH 生效；通过 UI 保存则即时生效。
@@ -171,6 +182,9 @@ touch ~/whitelist-probe          # 期望仍被拒：file access denied under wo
 
 最后一条是对照组：插件只放行白名单，没有把会话变成完全权限。
 
+macOS/Linux 上，命中命令的沙箱同时保留工作区：同一轮里刷新 token 再把下载/导出写回
+`./` 不会被拒绝（`home` 现在是"工作区 + `$HOME`"两个根）。
+
 UI 验证：在 **设置 → 命令自动放行**（或 Plugins 行页）添加或删除一条规则并保存，然后**立刻**执行上面的命令（不需要重启）；保存后的下一次 bash 调用就会使用新规则。
 
 ## 安全边界（请务必读）
@@ -185,8 +199,11 @@ UI 验证：在 **设置 → 命令自动放行**（或 Plugins 行页）添加�
 
 ## 已知限制
 
-- **只有一个可写根**：`home` 会覆盖 `workspaceRoot`，所以命中命令会失去对**会话工作区**的写权限。只在"工作区在 `$HOME` 之外"时才有影响；需要同时写两边的命令不适合加白名单。
-- **只处理 bash**：Windows 走 `pwsh-sandbox`，本插件的 row 在 win32 下禁用。
+- **macOS/Linux 两个可写根，Windows 一个**：macOS/Linux 上 `home` 会保留会话工作区并追加 `$HOME`；Windows（或 provider runner 无法识别）仍然会覆盖 `workspaceRoot`，命中命令会失去对工作区的写权限。
+- **overlay 是尽力而为**：它只是在官方 runner 的 profile/argv 上追加；runner 不认识、argv 形状变了、路径不存在，都会原样返回并告警一次。结果是"这次没加上根"，不是"放宽了沙箱"。
+- **`write`/`edit` 不覆盖**：overlay 只放宽被沙箱约束的命令；用文件工具写 `$HOME` 仍按会话策略走。
+- **不要和接管 `sandbox` provider 的插件混用**：overlay 的 allow 追加在最终 argv/profile 末尾；如果别的插件在同一 profile 里追加了自己的 deny，顺序可能反过来。本插件假设 provider 是官方 `dsh-sandbox-local`。
+- **只处理 bash**：Windows 上 DSH 走 `pwsh-sandbox`；overlay 在 win32 不安装，`home` 退回替换根。
 - **依赖 `ctx.shell.resolve()` 这个方法名**：DSH 升级若改变执行器契约，插件会退化为"不放行"，不会破坏执行。
 - **UI 只管理 `rules`**：`audit`、`upgradeFromReadOnly`、`extraPath`、`trace` 仍在 YAML；同一 `command` 的重复规则在 UI 中被阻止（YAML 仍可按顺序手写）。
 - **不能替代人工判断**。
@@ -198,6 +215,7 @@ dsh-whitelist-auto-approval/
 ├── package.json          # bundle + dsh.client 清单
 ├── cordis.patch.yml      # 插入 bash-sandbox-auto-approval 这一行
 ├── index.js              # 装饰 ctx.shell.resolve()，读取 volatile rules
+├── overlay.js            # 装饰 ctx.sandbox.confine()，按 runner 追加额外可写根
 ├── schema.js             # Config schema（rules 为 volatile）
 ├── client.js             # Web UI：Settings 页 + plugins.row.config 规则表
 ├── matcher.js            # 词法分析 / PATH 解析 / 规则匹配

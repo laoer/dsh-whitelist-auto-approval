@@ -78,7 +78,7 @@ test('match: allow-listed bare command gets the home grant', () => {
   assert.deepEqual(warnings, [])
   assert.deepEqual(match('lark-cli task +get-my-tasks', context), {
     rule: 'lark-cli',
-    grant: { mode: 'workspace-write', workspaceRoot: '/Users/tester' },
+    grant: { kind: 'home', mode: 'workspace-write', workspaceRoot: '/Users/tester' },
   })
 })
 
@@ -117,10 +117,10 @@ test('match: a binary inside the workspace is refused (PATH shadowing)', () => {
 
 test('match: grant full and custom', () => {
   const full = matcher([{ command: 'lark-cli', grant: 'full' }]).match('lark-cli x', context)
-  assert.deepEqual(full?.grant, { mode: 'danger-full-access' })
+  assert.deepEqual(full?.grant, { kind: 'full', mode: 'danger-full-access' })
 
   const custom = matcher([{ command: 'lark-cli', grant: 'custom', root: '~/.lark-cli' }]).match('lark-cli x', context)
-  assert.deepEqual(custom?.grant, { mode: 'workspace-write', workspaceRoot: '/Users/tester/.lark-cli' })
+  assert.deepEqual(custom?.grant, { kind: 'custom', mode: 'workspace-write', workspaceRoot: '/Users/tester/.lark-cli' })
 })
 
 test('match: deny filters cancel the grant', () => {

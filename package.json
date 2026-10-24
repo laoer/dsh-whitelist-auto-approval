@@ -1,7 +1,7 @@
 {
   "name": "dsh-whitelist-auto-approval",
-  "version": "0.2.1",
-  "description": "Per-command sandbox allow-list for the DSH bash tool, managed from Settings and the Plugins page: allow-listed CLIs run under a home-writable sandbox instead of prompting for danger-full-access.",
+  "version": "0.3.0",
+  "description": "Per-command sandbox allow-list for the DSH bash tool, managed from Settings and the Plugins page: allow-listed CLIs run with $HOME added as a writable root (the workspace stays writable on macOS/Linux) instead of prompting for danger-full-access.",
   "license": "MIT",
   "author": "Tim Gong",
   "repository": {
@@ -34,6 +34,7 @@
   "files": [
     "index.js",
     "matcher.js",
+    "overlay.js",
     "schema.js",
     "client.js",
     "cordis.patch.yml",

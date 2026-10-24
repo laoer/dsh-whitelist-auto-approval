@@ -27,6 +27,7 @@
 
 import { appendFileSync } from 'node:fs'
 import { createMatcher } from './matcher.js'
+import { installSandboxOverlay } from './overlay.js'
 
 /**
  * The row's `Config` schema. Exported from a separate module because it pulls
@@ -46,6 +47,15 @@ const ORIGINAL = Symbol.for('dsh-whitelist-auto-approval.original')
 const MAX_LOGGED_COMMAND = 500
 /** Stable identity for "no rules", so the lazy compiler does not rebuild on every call. */
 const NO_RULES = []
+
+/**
+ * Append one root to a policy's additional-root list without duplicating it.
+ * Keeps the original array reference when the root is already present.
+ */
+function addRoot(existing, root) {
+  const roots = Array.isArray(existing) ? existing : []
+  return roots.includes(root) ? roots : [...roots, root]
+}
 
 /**
  * Read the rules out of the resolved config.
@@ -88,6 +98,13 @@ export function apply(ctx, config = {}) {
   }
 
   trace('apply', { rules: initialRules.length, path: process.env.PATH ?? '' })
+
+  /**
+   * Whether the provider overlay is mounted. `grant: home` is additive only
+   * while this is true; Windows and an unrecognized provider keep the old
+   * replace-the-root behavior.
+   */
+  const overlayState = { ready: false }
 
   const matcherOptions = {
     extraPath: config.extraPath ?? [],
@@ -170,15 +187,36 @@ export function apply(ctx, config = {}) {
           })
           if (decision === undefined) return spec
 
+          // `home` is the one grant that can be applied additively: the
+          // provider overlay appends `$HOME` to the shipped writable roots, so
+          // the session workspace stays writable. Without the overlay (Windows,
+          // or a provider we cannot recognize) the old replace-the-root grant
+          // remains the only behavior that works, so keep it as the fallback.
+          const { kind, ...grantPolicy } = decision.grant
+          const additive = kind === 'home' && overlayState.ready
+          const target = additive
+            ? `+${grantPolicy.workspaceRoot}`
+            : (grantPolicy.workspaceRoot ?? grantPolicy.mode)
+
           if (audit) {
-            const target = decision.grant.workspaceRoot ?? decision.grant.mode
             const command = String(request?.command ?? '').slice(0, MAX_LOGGED_COMMAND)
             const session = policy.sessionId === undefined ? '' : ` session=${policy.sessionId}`
-            trace('grant', { rule: decision.rule, from: policy.workspaceRoot, to: target, command })
+            trace('grant', { rule: decision.rule, from: policy.workspaceRoot, to: target, additive, command })
             ctx.logger.info(`[auto-approval] rule "${decision.rule}" -> ${target}${session}: ${command}`)
           }
-          const granted = { ...spec, sandboxPolicy: { ...policy, ...decision.grant } }
-          trace('resolve-out', { mode: granted.sandboxPolicy.mode, root: granted.sandboxPolicy.workspaceRoot })
+          const sandboxPolicy = additive
+            ? {
+                ...policy,
+                mode: grantPolicy.mode,
+                extraWritableRoots: addRoot(policy.extraWritableRoots, grantPolicy.workspaceRoot),
+              }
+            : { ...policy, ...grantPolicy }
+          const granted = { ...spec, sandboxPolicy }
+          trace('resolve-out', {
+            mode: granted.sandboxPolicy.mode,
+            root: granted.sandboxPolicy.workspaceRoot,
+            extraRoots: granted.sandboxPolicy.extraWritableRoots,
+          })
           return granted
         } catch (error) {
           // A matcher bug must degrade to the normal sandbox + approval path,
@@ -200,5 +238,19 @@ export function apply(ctx, config = {}) {
         if (shell.resolve === patched) shell.resolve = base
       }
     })
+  })
+
+  // The provider overlay is what lets a `home` grant keep the session workspace
+  // and add `$HOME` as a second writable root. It decorates the live
+  // `ctx.sandbox.confine()`, never replaces the provider row: an unsupported
+  // runner or a bad argv leaves the shipped confinement untouched.
+  installSandboxOverlay(ctx, {
+    isSupported: () => process.platform === 'darwin' || process.platform === 'linux',
+    onReady: (ready) => {
+      overlayState.ready = ready
+      trace('overlay-ready', { ready })
+    },
+    logger: ctx.logger,
+    trace,
   })
 }
