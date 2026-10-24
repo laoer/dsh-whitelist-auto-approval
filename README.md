@@ -77,7 +77,7 @@ tool-bash ──resolve(request)──▶ 原 resolve()            // workdir/ti
 plugin_manager(action="install_bundle", target="dsh-whitelist-auto-approval")
 ```
 
-或在 Plugins 页 **Add plugin** 里填包名 `dsh-whitelist-auto-approval`（可带版本，如 `dsh-whitelist-auto-approval@0.2.0`）。
+或在 Plugins 页 **Add plugin** 里填包名 `dsh-whitelist-auto-approval`（可带版本，如 `dsh-whitelist-auto-approval@0.2.1`）。
 
 要跟仓库最新提交、或从本地目录调试时，用下面的 GitHub / 本地目录方式。
 

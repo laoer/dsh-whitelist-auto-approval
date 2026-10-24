@@ -72,7 +72,7 @@ The package is published on npm:
 plugin_manager(action="install_bundle", target="dsh-whitelist-auto-approval")
 ```
 
-Or use **Add plugin** on the Plugins page with `dsh-whitelist-auto-approval` (optionally `dsh-whitelist-auto-approval@0.2.0`).
+Or use **Add plugin** on the Plugins page with `dsh-whitelist-auto-approval` (optionally `dsh-whitelist-auto-approval@0.2.1`).
 
 To track the latest commit or install from a local checkout, use the GitHub or local-directory option below.
 
