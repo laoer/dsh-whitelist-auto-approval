@@ -93,7 +93,7 @@ overlay 按 runner 追加，不重建 profile：
 plugin_manager(action="install_bundle", target="dsh-whitelist-auto-approval")
 ```
 
-或在 Plugins 页 **Add plugin** 里填包名 `dsh-whitelist-auto-approval`（可带版本，如 `dsh-whitelist-auto-approval@0.3.0-beta`）。
+或在 Plugins 页 **Add plugin** 里填包名 `dsh-whitelist-auto-approval`（可带版本，如 `dsh-whitelist-auto-approval@0.3.1-beta`）。
 
 要跟仓库最新提交、或从本地目录调试时，用下面的 GitHub / 本地目录方式。
 

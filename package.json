@@ -1,6 +1,6 @@
 {
   "name": "dsh-whitelist-auto-approval",
-  "version": "0.3.0-beta",
+  "version": "0.3.1-beta",
   "description": "Per-command sandbox allow-list for the DSH bash tool, managed from Settings and the Plugins page: allow-listed CLIs run with $HOME added as a writable root (the workspace stays writable on macOS/Linux) instead of prompting for danger-full-access.",
   "license": "MIT",
   "author": "Tim Gong",
