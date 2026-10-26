@@ -73,6 +73,11 @@ overlay 按 runner 追加，不重建 profile：
 
 - 接受：普通参数、单/双引号、反斜杠转义；
 - 拒绝：`;` `&` `|` `<` `>` `(` `)` `{` `}` `` ` `` `$` `!`、换行、双引号内的 `$` 与反引号、未闭合引号；
+- **例外：一个开头的 `cd <目录> &&`**。模型常按别的 agent 的习惯写成
+  `cd /repo && lark-cli ...`，虽然 bash 工具有 `workdir` 参数。`cd` 只是内建命令、只改工作目录，
+  和 `workdir` 是同一个请求，所以剥掉这段前缀、用 `cd` 目标作为工作目录继续匹配。
+  只认**第一个** `&&`，剩下的部分仍须是"一条简单命令"：`cd /x && a | b`、
+  `cd /x && cd /y && a`、`cd /x && a > f` 依旧不命中。不想要这条例外就设 `allowCdPrefix: false`。
 - `argv[0]` 必须是裸命令名，或配置里写死的绝对路径；`./lark-cli`、`/tmp/x/lark-cli` 这类"模型自己指定的路径形式"不匹配；
 - 用 `PATH` 解析出真实文件（`realpath`），并拒绝落在**会话工作区 / `/tmp` / 系统临时目录**里的可执行文件——这是模型唯一能靠"往仓库里丢个同名脚本"劫持命名的路径。
 
@@ -127,7 +132,7 @@ plugin_manager(action="install_bundle", target="/绝对路径/dsh-whitelist-auto
 
 ## 配置（YAML，高级用法）
 
-默认白名单是 `lark-cli` 和 `gh`。UI 覆盖不到的字段（`audit`、`upgradeFromReadOnly`、`extraPath`、`trace`）或需要精调顺序时，仍可直接编辑 profile 的 patch 文件（`~/.dsh/profiles/<profile>/cordis.patch.yml`），覆盖本插件的 row——**同 id 的 `config` 是整段替换，不是合并**，所以要把需要的字段写全：
+默认白名单是 `lark-cli` 和 `gh`。UI 覆盖不到的字段（`audit`、`upgradeFromReadOnly`、`extraPath`、`allowCdPrefix`、`trace`）或需要精调顺序时，仍可直接编辑 profile 的 patch 文件（`~/.dsh/profiles/<profile>/cordis.patch.yml`），覆盖本插件的 row——**同 id 的 `config` 是整段替换，不是合并**，所以要把需要的字段写全：
 
 ```yaml
 - id: bash-sandbox-auto-approval
@@ -135,6 +140,7 @@ plugin_manager(action="install_bundle", target="/绝对路径/dsh-whitelist-auto
     audit: true                 # 每次放行写一行 Host 日志
     upgradeFromReadOnly: false  # 会话在 read-only 时不越权
     extraPath: []               # PATH 里找不到命令时，额外搜索的目录
+    allowCdPrefix: true         # 认 `cd <目录> && <白名单命令>` 这种写法
     rules:
       - name: lark-cli
         command: lark-cli       # 裸命令名（经 PATH 解析）
@@ -158,6 +164,20 @@ plugin_manager(action="install_bundle", target="/绝对路径/dsh-whitelist-auto
 | `deny` | 否 | 正则数组，作用于原始命令串；任一命中即不放行 |
 | `allow` | 否 | 正则数组；非空时必须命中其一才放行 |
 
+`deny` / `allow` 匹配的始终是**原始整条命令串**（含 `cd` 前缀），所以锚在开头写死的
+`allow`（如 `^lark-cli`）不会命中 `cd /x && lark-cli ...` 这种写法——这是偏保守的一侧：
+不命中只会多弹一次窗，不会多放行一条命令。
+
+顶层开关（不在规则里）：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `allowCdPrefix` | `true` | 接受一个开头的 `cd <目录> &&`：剥掉前缀、按 `cd` 目标解析并继续匹配。设为 `false` 回到"只认单条命令"的严格读法 |
+| `audit` | `true` | 每次放行写一行 Host 日志 |
+| `upgradeFromReadOnly` | `false` | 会话处于 `read-only` 时不越权放行 |
+| `extraPath` | `[]` | PATH 外额外搜索目录（GUI 启动的进程 PATH 可能很短） |
+| `trace` | 未设置 | 可选 JSONL，记录每次判定（未命中原因 / 命中的规则 / 可写根） |
+
 `grant` 三种取值的区别：
 
 | 值 | 实际策略 | 适用 |
@@ -172,12 +192,14 @@ plugin_manager(action="install_bundle", target="/绝对路径/dsh-whitelist-auto
 
 ## 验证
 
-在 `workspace-write` 会话里逐条执行（**不要**用 `;` `&&` 拼起来，组合命令不会命中规则）：
+在 `workspace-write` 会话里逐条执行。`;`、`|`、两个以上 `&&` 的组合都不会命中；只有单个开头的
+`cd <目录> &&` 会被识别（`allowCdPrefix: false` 可关掉）：
 
 ```bash
 lark-cli task +get-my-tasks      # 期望成功，且没有授权弹窗
 gh api user --jq .login          # 期望返回你的用户名
 touch ~/whitelist-probe          # 期望仍被拒：file access denied under workspace-write
+cd ~ && lark-cli task +get-my-tasks   # 期望同样成功：单个 cd 前缀被识别为同一条命令
 ```
 
 最后一条是对照组：插件只放行白名单，没有把会话变成完全权限。
@@ -203,7 +225,8 @@ UI 验证：在 **设置 → 命令自动放行**（或 Plugins 行页）添加�
 - **overlay 是尽力而为**：它只是在官方 runner 的 profile/argv 上追加；runner 不认识、argv 形状变了、路径不存在，都会原样返回并告警一次。结果是"这次没加上根"，不是"放宽了沙箱"。
 - **`write`/`edit` 不覆盖**：overlay 只放宽被沙箱约束的命令；用文件工具写 `$HOME` 仍按会话策略走。
 - **不要和接管 `sandbox` provider 的插件混用**：overlay 的 allow 追加在最终 argv/profile 末尾；如果别的插件在同一 profile 里追加了自己的 deny，顺序可能反过来。本插件假设 provider 是官方 `dsh-sandbox-local`。
-- **只处理 bash**：Windows 上 DSH 走 `pwsh-sandbox`；overlay 在 win32 不安装，`home` 退回替换根。
+- **只处理 bash**：Windows 上 DSH 走 `pwsh-sandbox`；overlay 在 win32 不安装，`home` 退回替换根。`cd` 前缀也只认 POSIX 的 `&&`，pwsh 的 `cd x; cmd` 仍不命中。
+- **`cd` 前缀只认一个**：`cd a && cd b && …`、`pushd`、`(cd a && …)` 都不命中；嵌套目录切换直接用 bash 工具的 `workdir`。
 - **依赖 `ctx.shell.resolve()` 这个方法名**：DSH 升级若改变执行器契约，插件会退化为"不放行"，不会破坏执行。
 - **UI 只管理 `rules`**：`audit`、`upgradeFromReadOnly`、`extraPath`、`trace` 仍在 YAML；同一 `command` 的重复规则在 UI 中被阻止（YAML 仍可按顺序手写）。
 - **不能替代人工判断**。
@@ -218,7 +241,7 @@ dsh-whitelist-auto-approval/
 ├── overlay.js            # 装饰 ctx.sandbox.confine()，按 runner 追加额外可写根
 ├── schema.js             # Config schema（rules 为 volatile）
 ├── client.js             # Web UI：Settings 页 + plugins.row.config 规则表
-├── matcher.js            # 词法分析 / PATH 解析 / 规则匹配
+├── matcher.js            # 词法分析 / cd 前缀拆分 / PATH 解析 / 规则匹配
 ├── vendor/               # vendored schemastery + cosmokit（MIT）
 ├── locale/{en,zh}.json
 ├── icon.svg

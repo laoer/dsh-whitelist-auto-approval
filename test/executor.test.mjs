@@ -85,6 +85,26 @@ test('apply: decorates resolve for an allow-listed command', () => {
   assert.equal(logs.filter(([level]) => level === 'info').length, 1)
 })
 
+test('apply: a leading cd prefix still gets the grant', () => {
+  const { ctx, shell, logs } = harness()
+  apply(ctx, { extraPath: [BIN], rules: [{ command: 'lark-cli', grant: 'home' }] })
+
+  const spec = shell.resolve({
+    command: 'cd /home/xiuyuan/project/shchest-web-hospital && lark-cli wiki +move --obj-type docx',
+    sandboxPolicy: policy,
+  })
+  assert.deepEqual(spec.sandboxPolicy, { mode: 'workspace-write', workspaceRoot: homedir(), sessionId: 's1' })
+  assert.equal(logs.filter(([level]) => level === 'info').length, 1)
+})
+
+test('apply: allowCdPrefix false leaves the cd-prefixed command alone', () => {
+  const { ctx, shell } = harness()
+  apply(ctx, { extraPath: [BIN], allowCdPrefix: false, rules: [{ command: 'lark-cli', grant: 'home' }] })
+
+  const spec = shell.resolve({ command: 'cd /work && lark-cli wiki +move', sandboxPolicy: policy })
+  assert.deepEqual(spec.sandboxPolicy, policy)
+})
+
 test('apply: leaves other commands, full access, and read-only alone', () => {
   const { ctx, shell } = harness()
   apply(ctx, { rules: [{ command: 'lark-cli', grant: 'home' }] })

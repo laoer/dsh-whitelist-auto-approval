@@ -108,6 +108,7 @@ export function apply(ctx, config = {}) {
 
   const matcherOptions = {
     extraPath: config.extraPath ?? [],
+    allowCdPrefix: config.allowCdPrefix !== false,
     onDecision: (info) => trace('decision', info),
     onWarning: (message) => {
       trace('warning', { message })

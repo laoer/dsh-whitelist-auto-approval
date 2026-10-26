@@ -9,6 +9,12 @@
  * Safety stance: anything this scanner does not fully understand is a
  * non-match. A non-match is harmless (the command keeps the session policy and
  * the normal approval prompt); a false match is not.
+ *
+ * One composition is understood on purpose: a single leading `cd <dir> &&`.
+ * Models habitually write it even though the `bash` tool takes a `workdir`, and
+ * `cd` only moves the working directory — it grants nothing the tool's own
+ * `workdir` parameter does not already grant. Everything after the `&&` still
+ * has to be one simple invocation, so `cd x && a | b` stays a non-match.
  */
 
 import { accessSync, constants, realpathSync, statSync } from 'node:fs'
@@ -120,6 +126,64 @@ export function tokenize(command) {
   return argv
 }
 
+/**
+ * Recognise a single leading `cd <dir> &&` and split it off.
+ *
+ * Only the exact shape `cd <one non-option argument> && <rest>` is split; the
+ * rest is then tokenized by the normal, strict `tokenize()`, so any second
+ * operator (`;`, `|`, a second `&&`, redirection) still makes the whole command
+ * a non-match. Quoting is honoured while looking for the `&&`, so
+ * `cd "a && b" && cmd` keeps its target.
+ *
+ * @param {unknown} command candidate command string.
+ * @returns {{ target: string, rest: string } | undefined} split, or undefined.
+ */
+export function splitCdPrefix(command) {
+  if (typeof command !== 'string' || command.length > MAX_COMMAND_LENGTH) return undefined
+
+  let start = 0
+  while (start < command.length && (command[start] === ' ' || command[start] === '\t')) start += 1
+  if (command.slice(start, start + 2) !== 'cd') return undefined
+  const separator = command[start + 2]
+  if (separator !== ' ' && separator !== '\t') return undefined
+
+  // The first `&&` the shell would see as an operator, skipping quotes and
+  // escaped characters. A `&&` inside quotes belongs to an argument.
+  let quote = ''
+  let split = -1
+  for (let i = start + 2; i < command.length - 1; i += 1) {
+    const ch = command[i]
+    if (quote !== '') {
+      if (ch === '\\' && quote === '"') i += 1
+      else if (ch === quote) quote = ''
+      continue
+    }
+    if (ch === '\\') {
+      i += 1
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch
+      continue
+    }
+    if (ch === '&' && command[i + 1] === '&') {
+      split = i
+      break
+    }
+  }
+  if (split === -1) return undefined
+
+  const args = tokenize(command.slice(start, split))
+  if (args === undefined || args.length !== 2 || args[0] !== 'cd') return undefined
+  const target = args[1]
+  // A target starting with `-` is an option (`cd -`, `cd -P /x`), not a path.
+  if (target === '' || target.startsWith('-')) return undefined
+
+  const rest = command.slice(split + 2)
+  if (rest.trim() === '') return undefined
+  return { target, rest }
+}
+
 function executableAt(path) {
   try {
     if (!statSync(path).isFile()) return undefined
@@ -159,6 +223,12 @@ function expandHome(path, home) {
   if (path === '~') return home
   if (path.startsWith('~/')) return join(home, path.slice(2))
   return path
+}
+
+/** The directory the allow-listed program will actually run in. */
+function resolveCdTarget(target, workdir, home) {
+  const expanded = expandHome(target, home)
+  return isAbsolute(expanded) ? expanded : resolvePath(workdir, expanded)
 }
 
 function compileRegexes(list, label, field, warn) {
@@ -264,6 +334,10 @@ export function createMatcher(rules, options = {}) {
   const onDecision = typeof options.onDecision === 'function' ? options.onDecision : () => {}
   const extraPath = (Array.isArray(options.extraPath) ? options.extraPath : []).map((entry) => String(entry ?? '').trim()).filter((entry) => entry !== '')
   const searchPath = [typeof env.PATH === 'string' ? env.PATH : '', ...extraPath].filter((entry) => entry !== '').join(':')
+  // `cd <dir> && <cmd>` is understood by default: it is the same request as the
+  // tool's `workdir` parameter, just spelled by habit. Operators that dislike
+  // even that shape can set `allowCdPrefix: false` and keep the strict reading.
+  const allowCdPrefix = options.allowCdPrefix !== false
 
   const compiled = []
   for (const [index, raw] of (Array.isArray(rules) ? rules : []).entries()) {
@@ -279,13 +353,21 @@ export function createMatcher(rules, options = {}) {
       onDecision({ reason: 'no-rules' })
       return undefined
     }
-    const argv = tokenize(command)
+
+    const workdir = context.workdir ?? process.cwd()
+    const cd = allowCdPrefix ? splitCdPrefix(command) : undefined
+    const invocation = cd === undefined ? command : cd.rest
+    const argv = tokenize(invocation)
     if (argv === undefined || argv.length === 0) {
       onDecision({ reason: 'not-simple', command })
       return undefined
     }
 
-    const cwd = context.workdir ?? process.cwd()
+    // A relative path-form argv[0] (`./x`, `bin/x`) must be resolved from the
+    // directory the shell will actually be in, exactly as it runs. Bare names
+    // still come from PATH, and the workspace/tmp check below runs on the real
+    // path either way.
+    const cwd = cd === undefined ? workdir : resolveCdTarget(cd.target, workdir, home)
     const executable = resolveExecutable(argv[0], { searchPath, cwd, home })
     if (executable === undefined) {
       onDecision({ reason: 'not-found', argv0: argv[0], path: searchPath })
@@ -309,7 +391,13 @@ export function createMatcher(rules, options = {}) {
         onDecision({ reason: 'filtered', rule: rule.label, command })
         return undefined
       }
-      onDecision({ reason: 'matched', rule: rule.label, executable: executable.real, grant: rule.grant })
+      onDecision({
+        reason: 'matched',
+        rule: rule.label,
+        executable: executable.real,
+        grant: rule.grant,
+        ...(cd === undefined ? {} : { cd: cd.target, cwd }),
+      })
       return { rule: rule.label, grant: rule.grant }
     }
     onDecision({ reason: 'no-rule', argv0: argv[0], executable: executable.real, rules: compiled.map((rule) => rule.label) })

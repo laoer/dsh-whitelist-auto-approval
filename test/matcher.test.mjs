@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { createMatcher, tokenize } from '../matcher.js'
+import { createMatcher, splitCdPrefix, tokenize } from '../matcher.js'
 
 const BIN = new URL('./fixtures/bin/', import.meta.url).pathname
 
@@ -71,6 +71,71 @@ test('tokenize: composition and expansion are refused', () => {
 
 test('tokenize: single-quoted $ is literal', () => {
   assert.deepEqual(tokenize("lark-cli x '$HOME'"), ['lark-cli', 'x', '$HOME'])
+})
+
+test('splitCdPrefix: one leading cd is split off', () => {
+  assert.deepEqual(splitCdPrefix('cd /srv/app && lark-cli wiki +move --obj-type docx'), {
+    target: '/srv/app',
+    rest: ' lark-cli wiki +move --obj-type docx',
+  })
+  assert.deepEqual(splitCdPrefix('  cd\t~/repo&&lark-cli x'), { target: '~/repo', rest: 'lark-cli x' })
+  // An `&&` inside the target belongs to the argument, not to the composition.
+  assert.deepEqual(splitCdPrefix('cd "a && b" && lark-cli x'), { target: 'a && b', rest: ' lark-cli x' })
+})
+
+test('splitCdPrefix: anything but cd <one path> && is refused', () => {
+  for (const command of [
+    'cd /x',
+    'cd',
+    'cdx /x && lark-cli',
+    'cd - && lark-cli',
+    'cd -P /x && lark-cli',
+    'cd a b && lark-cli',
+    'lark-cli && cd /x',
+    'cd /x; lark-cli',
+    'cd "unterminated && lark-cli',
+    'cd /x &&',
+  ]) {
+    assert.equal(splitCdPrefix(command), undefined, command)
+  }
+})
+
+test('match: a cd prefix is the same request as the tool workdir', () => {
+  const { match } = matcher([{ command: 'lark-cli' }])
+  assert.deepEqual(match('cd /home/xiuyuan/project/shchest-web-hospital && lark-cli wiki +move --obj-type docx', context), {
+    rule: 'lark-cli',
+    grant: { kind: 'home', mode: 'workspace-write', workspaceRoot: '/Users/tester' },
+  })
+  assert.notEqual(match('cd ~/repo && lark-cli task +get-my-tasks', context), undefined)
+  assert.notEqual(match('cd ../sibling && lark-cli task', context), undefined)
+})
+
+test('match: a cd prefix does not unlock a second command', () => {
+  const { match } = matcher([{ command: 'lark-cli' }])
+  for (const command of [
+    'cd /srv && lark-cli x; rm -rf ~',
+    'cd /srv && lark-cli x | tee out',
+    'cd /srv && cd /other && lark-cli x',
+    'cd /srv && lark-cli x > /tmp/out',
+    'cd /srv && other-cli x',
+    'cd /srv && ./lark-cli x',
+    'cd /srv && rm -rf ~',
+    'cd /srv && lark-cli x && rm -rf ~',
+  ]) {
+    assert.equal(match(command, context), undefined, command)
+  }
+})
+
+test('match: allowCdPrefix false keeps the strict reading', () => {
+  const { match } = matcher([{ command: 'lark-cli' }], { allowCdPrefix: false })
+  assert.equal(match('cd /srv && lark-cli x', context), undefined)
+  assert.notEqual(match('lark-cli x', context), undefined)
+})
+
+test('match: deny and allow filters still see the whole command with a cd prefix', () => {
+  const { match } = matcher([{ command: 'lark-cli', deny: ['/srv'] }])
+  assert.equal(match('cd /srv && lark-cli wiki +move', context), undefined)
+  assert.notEqual(match('cd /other && lark-cli wiki +move', context), undefined)
 })
 
 test('match: allow-listed bare command gets the home grant', () => {

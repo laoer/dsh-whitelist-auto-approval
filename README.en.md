@@ -66,6 +66,7 @@ The model hands over a whole shell string, so the plugin only accepts *one simpl
 
 - accepts quoting, escapes and ordinary arguments;
 - rejects `;` `&` `|` `<` `>` `(` `)` `{` `}` `` ` `` `$` `!`, newlines, `$`/backticks inside double quotes, and unterminated quotes;
+- **one exception: a single leading `cd <dir> &&`.** Models habitually write `cd /repo && lark-cli ...` even though the `bash` tool has a `workdir` parameter. `cd` is a builtin that only moves the working directory, so it is the same request as `workdir`: the prefix is stripped and its target becomes the effective working directory. Only the *first* `&&` is split off and the remainder must still be one simple command — `cd /x && a | b`, `cd /x && cd /y && a` and `cd /x && a > f` stay non-matches. Set `allowCdPrefix: false` to disable the exception;
 - `argv[0]` must be a bare command name or an absolute path written in the config — `./lark-cli` is not matched;
 - the executable is resolved through `PATH` and `realpath`, and a binary inside the session workspace, `/tmp` or the temp directory is refused (that is the only way a model could shadow the name from the repository).
 
@@ -120,7 +121,7 @@ Editing the allow-list is always a user action: the plugin registers no agent to
 
 ## Configuration (YAML, advanced)
 
-The default allow-list is `lark-cli` and `gh`. For fields the UI does not cover (`audit`, `upgradeFromReadOnly`, `extraPath`, `trace`) or for exact rule ordering, override the row in your profile patch (`~/.dsh/profiles/<profile>/cordis.patch.yml`). Note that an override replaces the whole `config` — restate every field you need:
+The default allow-list is `lark-cli` and `gh`. For fields the UI does not cover (`audit`, `upgradeFromReadOnly`, `extraPath`, `allowCdPrefix`, `trace`) or for exact rule ordering, override the row in your profile patch (`~/.dsh/profiles/<profile>/cordis.patch.yml`). Note that an override replaces the whole `config` — restate every field you need:
 
 ```yaml
 - id: bash-sandbox-auto-approval
@@ -128,6 +129,7 @@ The default allow-list is `lark-cli` and `gh`. For fields the UI does not cover 
     audit: true
     upgradeFromReadOnly: false
     extraPath: []
+    allowCdPrefix: true
     rules:
       - { name: lark-cli, command: lark-cli, grant: home }
       - { name: gh, command: gh, grant: home, deny: ['\bapi\b.*--method\s+DELETE'] }
@@ -143,6 +145,20 @@ The default allow-list is `lark-cli` and `gh`. For fields the UI does not cover 
 | `deny` | no | regexes over the raw command line; any match cancels the grant |
 | `allow` | no | regexes; when non-empty at least one must match |
 
+`deny` / `allow` always run against the **raw command string**, `cd` prefix included, so an
+`allow` anchored at the start (`^lark-cli`) will not match `cd /x && lark-cli ...`. That fails
+on the safe side: a missing match means one more prompt, never one more grant.
+
+Top-level switches (not per-rule):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `allowCdPrefix` | `true` | Accept one leading `cd <dir> &&`: strip it, resolve against that directory, keep matching. `false` restores the strict "one simple command" reading |
+| `audit` | `true` | Write one Host log line per grant |
+| `upgradeFromReadOnly` | `false` | Do not widen a `read-only` session |
+| `extraPath` | `[]` | Extra PATH entries (a GUI-launched process can have a short PATH) |
+| `trace` | unset | Optional JSONL of every decision (non-match reason, matched rule, writable root) |
+
 | `grant` | Actual policy | Use for |
 |---|---|---|
 | `home` | macOS/Linux: `workspace-write`, workspace kept + `$HOME` appended; Windows or no overlay: writable root `$HOME` | CLIs that write their own state in your home and also write into the workspace (recommended) |
@@ -155,12 +171,13 @@ Manual YAML edits need a restart. Saves from the UI apply immediately.
 
 ## Verify
 
-Run each line **on its own** (a compound command is never granted):
+Run each line **on its own**. `;`, `|` and a second `&&` are never granted; only a single leading `cd <dir> &&` is recognised (`allowCdPrefix: false` turns that off too):
 
 ```bash
 lark-cli task +get-my-tasks      # succeeds, no approval prompt
 gh api user --jq .login          # prints your login
 touch ~/whitelist-probe          # still denied: file access denied under workspace-write
+cd ~ && lark-cli task +get-my-tasks   # also succeeds: the single cd prefix is the same command
 ```
 
 The last line is the control: the plugin widens the allow-list, not the session.
@@ -187,7 +204,8 @@ UI check: add or remove a rule in **Settings → Command Auto-Approval** (or the
 - **The overlay is best effort.** It only appends to the shipped runner profile; an unknown runner, a changed argv shape or a missing path leaves the shipped confinement untouched and logs one warning. The result is a missing extra root, not a wider sandbox.
 - **`write`/`edit` are not covered.** The overlay only widens the sandboxed command; writing `$HOME` through the file tools still follows the session policy.
 - **Do not mix it with a plugin that owns the `sandbox` provider.** The overlay appends its allow to the final argv/profile; a plugin that appends its own deny in the same profile can end up on the wrong side of the order. This plugin assumes the official `dsh-sandbox-local` provider.
-- **bash only.** Windows uses `pwsh-sandbox`; the overlay is not installed there and `home` falls back to replacing the root.
+- **bash only.** Windows uses `pwsh-sandbox`; the overlay is not installed there and `home` falls back to replacing the root. The `cd` prefix is POSIX `&&` only, so pwsh's `cd x; cmd` still does not match.
+- **One `cd` prefix only.** `cd a && cd b && …`, `pushd` and `(cd a && …)` do not match; use the bash tool's `workdir` for nested directory changes.
 - **Depends on `ctx.shell.resolve()`.** A future DSH release that changes the executor contract degrades the plugin to "no grants" — it does not break execution.
 - **The UI manages `rules` only.** `audit`, `upgradeFromReadOnly`, `extraPath` and `trace` stay in YAML; the UI blocks duplicate commands (YAML can still order them by hand).
 

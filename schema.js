@@ -36,6 +36,9 @@ export const Config = Schema.object({
   extraPath: Schema.array(Schema.string())
     .default([])
     .description('Extra PATH entries used when resolving a bare command name.'),
+  allowCdPrefix: Schema.boolean()
+    .default(true)
+    .description('Accept one leading "cd <dir> &&" before an allow-listed command; set false for the strict reading.'),
   trace: Schema.string()
     .description('Optional JSONL trace file for diagnosing rule decisions.'),
   rules: Schema.array(Schema.any())
