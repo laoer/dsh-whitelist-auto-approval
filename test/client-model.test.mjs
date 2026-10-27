@@ -228,3 +228,63 @@ test('client: apply registers the Plugins cell and the Settings section', () => 
     helpers.SettingsSection({ controller: fakeController, t: (key) => key, locale: null }),
   )
 })
+
+test('client: roots and shape round-trip through the editor model', () => {
+  const [rule] = helpers.normalizeRules([
+    { command: 'lark-cli', roots: [' ~/.lark-cli ', '', '/work/cache'], shape: 'any' },
+  ])
+  assert.equal(rule.grant, 'roots')
+  assert.equal(rule.roots, '~/.lark-cli\n/work/cache')
+  assert.equal(rule.shape, 'any')
+  assert.deepEqual(helpers.toConfigRules([rule]), [
+    { command: 'lark-cli', roots: ['~/.lark-cli', '/work/cache'], shape: 'any' },
+  ])
+
+  // A roots rule never writes a redundant `grant`, so the Host keeps treating
+  // the list as authoritative without warning.
+  const [plain] = helpers.normalizeRules([{ command: 'lark-cli', roots: ['~/.lark-cli'] }])
+  assert.deepEqual(helpers.toConfigRules([plain]), [{ command: 'lark-cli', roots: ['~/.lark-cli'] }])
+})
+
+test('client: roots and shape validation mirror the Host rules', () => {
+  const rule = (overrides) => ({ ...helpers.fromRule({ command: 'gh', grant: 'home' }), ...overrides })
+
+  assert.deepEqual(codes(helpers.validateRule(rule({ grant: 'roots', roots: '' }), 0, [])), ['rootsRequired'])
+  assert.deepEqual(codes(helpers.validateRule(rule({ grant: 'roots', roots: '/a\nbin/b' }), 0, [])), ['rootsInvalid'])
+  assert.deepEqual(codes(helpers.validateRule(rule({ grant: 'roots', roots: '/a\n~/b' }), 0, [])), [])
+  assert.deepEqual(codes(helpers.validateRule(rule({ shape: 'yolo' }), 0, [])), ['shapeInvalid'])
+  assert.deepEqual(codes(helpers.validateRule(rule({ grant: 'home', shape: 'any' }), 0, [])), ['shapeHomeConflict'])
+  assert.deepEqual(codes(helpers.validateRule(rule({ grant: 'custom', root: '~/.gh', shape: 'any' }), 0, [])), [])
+})
+
+test('client: the editor and the table render a roots + any rule', () => {
+  const t = (key) => key
+  const rules = helpers.normalizeRules([
+    { command: 'lark-cli', roots: ['~/.lark-cli', '/work/cache'], shape: 'any' },
+  ])
+  const problems = rules.map((rule, index) => helpers.validateRule(rule, index, rules))
+  assert.deepEqual(problems, [[]])
+  assert.doesNotThrow(() => helpers.RuleTable({ rules, problems, t, disabled: false, onEdit() {}, onDelete() {} }))
+  const draft = rules[0]
+  assert.doesNotThrow(() => helpers.RuleEditor({ initial: draft, index: 0, all: [draft], t, onSave() {}, onCancel() {} }))
+})
+
+test('client: a YAML config with roots and shape survives a UI save unchanged', () => {
+  const source = [
+    {
+      command: 'lark-cli',
+      name: 'lark-cli',
+      roots: ['~/.lark-cli', '~/Library/Application Support/lark-cli'],
+      shape: 'any',
+    },
+    { command: 'gh', name: 'gh', roots: ['~/.config/gh'] },
+    { command: 'my-tool', grant: 'custom', root: '~/.my-tool' },
+    { command: 'danger', grant: 'full', deny: ['\\brm\\b'] },
+  ]
+
+  const rules = helpers.normalizeRules(source)
+  for (const rule of rules) {
+    assert.deepEqual(codes(helpers.validateRule(rule, rules.indexOf(rule), rules)), [])
+  }
+  assert.deepEqual(helpers.toConfigRules(rules), source)
+})

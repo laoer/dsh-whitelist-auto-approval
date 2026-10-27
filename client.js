@@ -26,7 +26,8 @@ window.__ModuleLoader__.load({
     const ROW_ID = 'bash-sandbox-auto-approval'
     const UI_KEY = `${PACKAGE}#${ROW_ID}`
     const NS = 'dsh-whitelist-auto-approval.ui'
-    const GRANTS = ['home', 'custom', 'full']
+    const GRANTS = ['home', 'custom', 'roots', 'full']
+    const SHAPES = ['strict', 'any']
 
     const zh = {
       summary: '按命令配置的沙箱白名单',
@@ -54,7 +55,9 @@ window.__ModuleLoader__.load({
       grantHome: 'Home',
       grantHomeDesc: '可写整个用户目录，并保留工作区可写（macOS/Linux）；Windows 上只放宽到用户目录。',
       grantCustom: '指定目录',
-      grantCustomDesc: '只放宽到指定的可写根。',
+      grantCustomDesc: '在会话工作区之外，只放宽到指定的可写根。',
+      grantRoots: '多个目录',
+      grantRootsDesc: '在会话工作区之外，放宽到列出的每个目录；配合「任意写法」使用时必须足够窄。',
       grantFull: '完全访问',
       grantFullDesc: '移除沙箱限制；慎用。',
       grantInvalid: '未知授权：{grant}',
@@ -62,6 +65,15 @@ window.__ModuleLoader__.load({
       fullAck: '我明白 full 会移除沙箱限制',
       rootLabel: '可写根',
       rootHint: '绝对路径，或以 ~/ 开头。',
+      rootsLabel: '可写根（每行一个）',
+      rootsHint: '绝对路径，或以 ~/ 开头；至少一个。',
+      shapeLabel: '接受的写法',
+      shapeStrict: '严格',
+      shapeStrictDesc: '只接受一条简单管道：主命令 + 写中立的 tail/head/wc、2>&1、/dev/null。',
+      shapeAny: '任意写法',
+      shapeAnyDesc: '不再解析语法，只要命令行里出现这个程序就放行——仅当可写根足够窄时使用。',
+      shapeAnyShort: '任意写法',
+      shapeHomeConflict: '「任意写法」不能用在整个家目录上。',
       denyLabel: 'deny 正则',
       denyHint: '每行一个；任一命中即不放行。',
       allowLabel: 'allow 正则',
@@ -93,9 +105,13 @@ window.__ModuleLoader__.load({
       errorCommandRequired: '命令不能为空。',
       errorCommandSpace: '命令不能包含空白字符。',
       errorCommandPath: '路径形式的命令必须以 / 或 ~/ 开头。',
-      errorGrantInvalid: '授权范围必须是 home、custom 或 full。',
+      errorGrantInvalid: '授权范围必须是 home、custom、roots 或 full。',
       errorRootRequired: 'custom 授权需要可写根。',
       errorRootInvalid: '可写根必须是绝对路径或以 ~/ 开头。',
+      errorRootsRequired: '「多个目录」至少要有一个可写根。',
+      errorRootsInvalid: '每一行可写根都必须是绝对路径或以 ~/ 开头。',
+      errorShapeInvalid: '未知写法：{shape}',
+      errorShapeHomeConflict: '「任意写法」需要 app 私有的可写根：请把授权范围收窄到具体目录，或改用「严格」。',
       errorDenyInvalid: 'deny 正则无效：{pattern}',
       errorAllowInvalid: 'allow 正则无效：{pattern}',
       errorDuplicate: '已经有规则使用命令 {command}；UI 不允许重复（YAML 仍可手写）。',
@@ -128,7 +144,9 @@ window.__ModuleLoader__.load({
       grantHome: 'Home',
       grantHomeDesc: 'May write the whole home directory and keeps the workspace writable (macOS/Linux); on Windows it only widens to the home directory.',
       grantCustom: 'Custom root',
-      grantCustomDesc: 'Widens only to the chosen writable root.',
+      grantCustomDesc: 'Widens, beyond the workspace, only to the chosen writable root.',
+      grantRoots: 'Several directories',
+      grantRootsDesc: 'Widens, beyond the workspace, to every listed directory; keep them narrow when combined with "Any shape".',
       grantFull: 'Full access',
       grantFullDesc: 'Removes the sandbox; use with care.',
       grantInvalid: 'Unknown grant: {grant}',
@@ -136,6 +154,15 @@ window.__ModuleLoader__.load({
       fullAck: 'I understand full access removes the sandbox',
       rootLabel: 'Writable root',
       rootHint: 'An absolute path, or one starting with ~/.',
+      rootsLabel: 'Writable roots (one per line)',
+      rootsHint: 'Absolute paths, or ones starting with ~/; at least one.',
+      shapeLabel: 'Accepted shapes',
+      shapeStrict: 'Strict',
+      shapeStrictDesc: 'One simple pipeline only: the command plus write-neutral tail/head/wc, 2>&1, /dev/null.',
+      shapeAny: 'Any shape',
+      shapeAnyDesc: 'Stops reading the grammar: any command line naming this program is granted. Only with narrow roots.',
+      shapeAnyShort: 'any shape',
+      shapeHomeConflict: '"Any shape" cannot be used with the whole home directory.',
       denyLabel: 'deny regex',
       denyHint: 'One per line; any match blocks the grant.',
       allowLabel: 'allow regex',
@@ -167,9 +194,13 @@ window.__ModuleLoader__.load({
       errorCommandRequired: 'Command is required.',
       errorCommandSpace: 'Command must not contain whitespace.',
       errorCommandPath: 'A path-form command must start with / or ~/.',
-      errorGrantInvalid: 'Grant must be home, custom, or full.',
+      errorGrantInvalid: 'Grant must be home, custom, roots, or full.',
       errorRootRequired: 'A custom grant needs a writable root.',
       errorRootInvalid: 'The writable root must be absolute or start with ~/.',
+      errorRootsRequired: 'A multi-root grant needs at least one directory.',
+      errorRootsInvalid: 'Every writable root must be an absolute path or start with ~/.',
+      errorShapeInvalid: 'Unknown shape: {shape}',
+      errorShapeHomeConflict: '"Any shape" needs app-private roots: narrow the grant to specific directories, or use "Strict".',
       errorDenyInvalid: 'Invalid deny regex: {pattern}',
       errorAllowInvalid: 'Invalid allow regex: {pattern}',
       errorDuplicate: 'Another rule already uses {command}; the UI does not allow duplicates (YAML still can).',
@@ -192,6 +223,8 @@ window.__ModuleLoader__.load({
         name: '',
         grant: 'home',
         root: '',
+        roots: '',
+        shape: 'strict',
         deny: '',
         allow: '',
         fullAck: false,
@@ -216,6 +249,16 @@ window.__ModuleLoader__.load({
       return { patterns: lines, invalid: undefined }
     }
 
+    /** Split a roots textarea into directories; returns the first non-absolute line. */
+    function parseRootLines(text) {
+      const entries = String(text ?? '')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line !== '')
+      const invalid = entries.find((entry) => !entry.startsWith('/') && !entry.startsWith('~/'))
+      return { entries, invalid }
+    }
+
     /** Build the editable draft from one raw config rule. */
     function fromRule(raw) {
       if (!isPlainObject(raw)) return makeRule({ entryProblem: 'notObject' })
@@ -224,14 +267,27 @@ window.__ModuleLoader__.load({
         (raw.name === undefined || typeof raw.name === 'string') &&
         (raw.grant === undefined || typeof raw.grant === 'string') &&
         (raw.root === undefined || typeof raw.root === 'string') &&
+        (raw.roots === undefined || (Array.isArray(raw.roots) && raw.roots.every((entry) => typeof entry === 'string'))) &&
+        (raw.shape === undefined || typeof raw.shape === 'string') &&
         (raw.deny === undefined || (Array.isArray(raw.deny) && raw.deny.every((entry) => typeof entry === 'string'))) &&
         (raw.allow === undefined || (Array.isArray(raw.allow) && raw.allow.every((entry) => typeof entry === 'string')))
-      const grant = typeof raw.grant === 'string' && raw.grant !== '' ? raw.grant : 'home'
+      // An explicit roots list is what the Host applies, so the editor shows
+      // that grant even when the YAML also carries a stale `grant`/`root`.
+      const hasRoots = Array.isArray(raw.roots)
+      const grant = hasRoots ? 'roots' : (typeof raw.grant === 'string' && raw.grant !== '' ? raw.grant : 'home')
       return makeRule({
         command: typeof raw.command === 'string' ? raw.command : '',
         name: typeof raw.name === 'string' ? raw.name : '',
         grant,
         root: typeof raw.root === 'string' ? raw.root : '',
+        roots: hasRoots
+          ? raw.roots
+              .filter((entry) => typeof entry === 'string')
+              .map((entry) => entry.trim())
+              .filter((entry) => entry !== '')
+              .join('\n')
+          : '',
+        shape: raw.shape === 'any' ? 'any' : 'strict',
         deny: Array.isArray(raw.deny) ? raw.deny.filter((entry) => typeof entry === 'string').join('\n') : '',
         allow: Array.isArray(raw.allow) ? raw.allow.filter((entry) => typeof entry === 'string').join('\n') : '',
         fullAck: grant === 'full',
@@ -268,6 +324,14 @@ window.__ModuleLoader__.load({
         if (root === '') problems.push({ code: 'rootRequired', field: 'root' })
         else if (!root.startsWith('/') && !root.startsWith('~/')) problems.push({ code: 'rootInvalid', field: 'root' })
       }
+      if (rule.grant === 'roots') {
+        const roots = parseRootLines(rule.roots)
+        if (roots.entries.length === 0) problems.push({ code: 'rootsRequired', field: 'roots' })
+        else if (roots.invalid !== undefined) problems.push({ code: 'rootsInvalid', field: 'roots' })
+      }
+      if (!SHAPES.includes(rule.shape)) problems.push({ code: 'shapeInvalid', field: 'shape', detail: rule.shape })
+      // Mirrors the Host rule: "any" is only defensible over app-private roots.
+      if (rule.shape === 'any' && rule.grant === 'home') problems.push({ code: 'shapeHomeConflict', field: 'shape' })
       const deny = parseRegexLines(rule.deny)
       if (deny.invalid !== undefined) problems.push({ code: 'denyInvalid', field: 'deny', detail: deny.invalid })
       const allow = parseRegexLines(rule.allow)
@@ -288,11 +352,18 @@ window.__ModuleLoader__.load({
         const entry = { command: rule.command.trim() }
         const name = rule.name.trim()
         if (name !== '') entry.name = name
-        if (rule.grant !== 'home') entry.grant = rule.grant
-        if (rule.grant === 'custom') {
-          const root = rule.root.trim()
-          if (root !== '') entry.root = root
+        if (rule.grant === 'roots') {
+          // The list is the grant; writing `grant: roots` too would be redundant.
+          const roots = parseRootLines(rule.roots).entries
+          if (roots.length > 0) entry.roots = roots
+        } else if (rule.grant !== 'home') {
+          entry.grant = rule.grant
+          if (rule.grant === 'custom') {
+            const root = rule.root.trim()
+            if (root !== '') entry.root = root
+          }
         }
+        if (rule.shape === 'any') entry.shape = 'any'
         const deny = parseRegexLines(rule.deny).patterns
         if (deny.length > 0) entry.deny = deny
         const allow = parseRegexLines(rule.allow).patterns
@@ -302,7 +373,7 @@ window.__ModuleLoader__.load({
     }
 
     function ruleShape(rule) {
-      return [rule.command.trim(), rule.name.trim(), rule.grant, rule.root.trim(), rule.deny, rule.allow]
+      return [rule.command.trim(), rule.name.trim(), rule.grant, rule.root.trim(), rule.roots, rule.shape, rule.deny, rule.allow]
     }
 
     function rulesEqual(left, right) {
@@ -313,6 +384,7 @@ window.__ModuleLoader__.load({
     function grantLabel(t, grant) {
       if (grant === 'home') return t('grantHome')
       if (grant === 'custom') return t('grantCustom')
+      if (grant === 'roots') return t('grantRoots')
       if (grant === 'full') return t('grantFull')
       return t('grantInvalid', { grant })
     }
@@ -320,6 +392,7 @@ window.__ModuleLoader__.load({
     function grantDescription(t, grant) {
       if (grant === 'home') return t('grantHomeDesc')
       if (grant === 'custom') return t('grantCustomDesc')
+      if (grant === 'roots') return t('grantRootsDesc')
       if (grant === 'full') return t('grantFullDesc')
       return ''
     }
@@ -342,6 +415,14 @@ window.__ModuleLoader__.load({
           return t('errorRootRequired')
         case 'rootInvalid':
           return t('errorRootInvalid')
+        case 'rootsRequired':
+          return t('errorRootsRequired')
+        case 'rootsInvalid':
+          return t('errorRootsInvalid')
+        case 'shapeInvalid':
+          return t('errorShapeInvalid', { shape: problem.detail })
+        case 'shapeHomeConflict':
+          return t('errorShapeHomeConflict')
         case 'denyInvalid':
           return t('errorDenyInvalid', { pattern: problem.detail })
         case 'allowInvalid':
@@ -467,6 +548,14 @@ window.__ModuleLoader__.load({
                   rule.grant === 'custom' && rule.root.trim() !== ''
                     ? h('div', { className: 'dwa-sub' }, h('code', null, rule.root.trim()))
                     : null,
+                  rule.grant === 'roots' && rule.roots.trim() !== ''
+                    ? h(
+                        'div',
+                        { className: 'dwa-sub' },
+                        h('code', null, rule.roots.trim().split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '').join(', ')),
+                      )
+                    : null,
+                  rule.shape === 'any' ? h('div', { className: 'dwa-sub' }, t('shapeAnyShort')) : null,
                   h('div', { className: 'dwa-sub' }, grantDescription(t, rule.grant)),
                 ),
                 h(
@@ -588,6 +677,7 @@ window.__ModuleLoader__.load({
               : h('option', { value: value.grant, disabled: true }, t('grantInvalid', { grant: value.grant })),
             h('option', { value: 'home' }, t('grantHome')),
             h('option', { value: 'custom' }, t('grantCustom')),
+            h('option', { value: 'roots' }, t('grantRoots')),
             h('option', { value: 'full' }, t('grantFull')),
           ),
           h('span', { className: 'dwa-help' }, grantDescription(t, value.grant)),
@@ -606,7 +696,40 @@ window.__ModuleLoader__.load({
               }),
               h('span', { className: 'dwa-help' }, t('rootHint')),
             )
-          : null,
+          : value.grant === 'roots'
+            ? h(
+                'label',
+                { className: 'dwa-field' },
+                h('span', null, t('rootsLabel')),
+                h('textarea', {
+                  className: 'dwa-textarea',
+                  value: value.roots,
+                  spellCheck: false,
+                  rows: 3,
+                  'aria-invalid': invalid('roots') || undefined,
+                  onChange: (event) => update({ roots: event.target.value }),
+                }),
+                h('span', { className: 'dwa-help' }, t('rootsHint')),
+              )
+            : null,
+        h(
+          'label',
+          { className: 'dwa-field' },
+          h('span', null, t('shapeLabel')),
+          h(
+            'select',
+            {
+              className: 'dwa-select',
+              value: value.shape,
+              'aria-invalid': invalid('shape') || undefined,
+              onChange: (event) => update({ shape: event.target.value }),
+            },
+            SHAPES.includes(value.shape) ? null : h('option', { value: value.shape, disabled: true }, value.shape),
+            h('option', { value: 'strict' }, t('shapeStrict')),
+            h('option', { value: 'any' }, t('shapeAny')),
+          ),
+          h('span', { className: 'dwa-help' }, value.shape === 'any' ? t('shapeAnyDesc') : t('shapeStrictDesc')),
+        ),
         h(
           'div',
           { className: 'dwa-field' },
@@ -926,8 +1049,10 @@ window.__ModuleLoader__.load({
         PACKAGE,
         ROW_ID,
         GRANTS,
+        SHAPES,
         dicts: { zh, en },
         parseRegexLines,
+        parseRootLines,
         fromRule,
         normalizeRules,
         validateRule,

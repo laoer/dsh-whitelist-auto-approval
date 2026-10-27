@@ -31,7 +31,7 @@ DSH's `workspace-write` sandbox only allows writes to the session workspace, `/t
 
 `lark-cli` refreshes its token under `~/Library/Application Support/lark-cli/` and keeps caches, locks and logs under `~/.lark-cli/`. Both are outside the workspace, so the command is denied, the model retries with `sandbox_permissions: danger-full-access`, and you get an approval prompt every time — or you give up file isolation for the entire session.
 
-On macOS/Linux this plugin replaces that first denial with a wider *write scope for that one call*: the session workspace stays writable and `$HOME` is appended as a second root. On Windows (or when the runner cannot be recognized) it falls back to the old behavior: `$HOME` replaces the writable root.
+On macOS/Linux this plugin replaces that first denial with a wider *write scope for that one call*: the session workspace stays writable and the rule's directories are appended (`$HOME` by default; narrow them with `roots`). On Windows (or when the runner cannot be recognized) it falls back to the old behavior: `$HOME` replaces the writable root.
 
 ## How it works
 
@@ -62,55 +62,125 @@ Design choices:
 
 ## Matching
 
-The model hands over a whole shell string, so the plugin only accepts *one simple command*:
+The model hands over a whole shell string, not an argv, so the plugin answers one question: **is this
+command's write footprint contained in the footprint of a trusted program?** The rule is a single
+invariant:
 
-- accepts quoting, escapes and ordinary arguments;
-- rejects `;` `&` `|` `<` `>` `(` `)` `{` `}` `` ` `` `$` `!`, newlines, `$`/backticks inside double quotes, and unterminated quotes;
-- **one exception: a single leading `cd <dir> &&`.** Models habitually write `cd /repo && lark-cli ...` even though the `bash` tool has a `workdir` parameter. `cd` is a builtin that only moves the working directory, so it is the same request as `workdir`: the prefix is stripped and its target becomes the effective working directory. Only the *first* `&&` is split off and the remainder must still be one simple command — `cd /x && a | b`, `cd /x && cd /y && a` and `cd /x && a > f` stay non-matches. Set `allowCdPrefix: false` to disable the exception;
-- `argv[0]` must be a bare command name or an absolute path written in the config — `./lark-cli` is not matched;
-- the executable is resolved through `PATH` and `realpath`, and a binary inside the session workspace, `/tmp` or the temp directory is refused (that is the only way a model could shadow the name from the repository).
+> At grant time, everything the command may write is a subset of what the matched program may write.
 
-### Pitfall: `2>&1 | tail -N` suffixes
+That invariant does not care how the command is spelled, only whether it can still write somewhere
+else. So one simple pipeline is accepted:
 
-Models love to write:
+- The first stage must be an allow-listed program: `argv[0]` is resolved through `PATH` and
+  `realpath`, and a binary inside the session workspace, `/tmp`, or the temp directory is refused
+  (that is the one way a model could shadow the name from the repository).
+- Later stages must be **write-neutral filters**: `tail`, `head`, and `wc`, with numeric or fixed
+  flags only (`-12`, `-n 12`, `--lines=12`, `wc -l`). No path operands, no `-f`, and none of
+  `tee` / `sh` / `sed -i` / `awk` / `sort -o` — those write files or start another program. Filters
+  go through the same `PATH` + `realpath` + workspace/tmp checks.
+- Redirects must open **no path at all**: `2>&1`, `1>&2`, `>&-`, `>/dev/null` (and `>>`).
+- Quoted characters are not executed and are kept verbatim (`--text "a; b"` still works). `;`, `&`,
+  `&&`, `$(...)`, backticks, `!`, newlines, heredocs, unterminated quotes, and commands over 8 KB are
+  refused.
+- `argv[0]` must be a bare command name, or an absolute path written in the config — `./lark-cli`
+  and `/tmp/x/lark-cli` are not matched.
+- **One exception: a single leading `cd <dir> &&`** (`allowCdPrefix`, on by default). Models
+  habitually write `cd /repo && lark-cli ...` even though the `bash` tool has a `workdir` parameter.
+  `cd` is a builtin that only moves the working directory, so it is the same request as `workdir`:
+  the prefix is stripped and its target becomes the effective working directory. Only the *first*
+  `&&` is split off; the remainder is parsed by the pipeline rules above. Set `allowCdPrefix: false`
+  to disable the exception.
 
-```bash
-cd /repo && lark-cli docs +update --doc ... --as user 2>&1 | tail -12
-```
-
-This is **not** matched: the `cd` prefix is stripped as usual, but the remainder
-`lark-cli ... 2>&1 | tail -12` still contains `>` (open a file) and `|` (run a second program),
-so it is a compound command and the lexer refuses it. Drop the suffixes and it matches — and both
-suffixes are redundant anyway: the DSH bash tool already merges stdout/stderr, returns only the
-tail, and spills the full output to a file whose path it reports.
+### Shapes that match
 
 | Shape | Result |
 |---|---|
-| `cd /repo && lark-cli docs +update ...` | matched |
 | `lark-cli docs +update ...` (with `workdir`) | matched |
-| the same, plus a trailing `2>&1` | refused (`>`) |
-| the same, plus a trailing `tail -12` pipe | refused (pipe) |
-| both suffixes | refused (both) |
+| `cd /repo && lark-cli docs +update ...` | matched |
+| the same, plus a trailing `2>&1` | matched |
+| the same, piped into `\| tail -12` | matched |
+| the same, piped into `\| head -n 20` or `\| wc -l` | matched |
+| the same, with `> out.log` or `>\| out.log` | refused (writes a file) |
+| the same, with `\| tee out.log`, `\| sh`, or `\| tail -f` | refused (writes / starts another program) |
+| the same, with `; echo done` or `&& echo done` | refused (second command) |
+| the same, with `\| tail $(echo 3)` | refused (command substitution) |
 
-The plugin will **not** widen the lexer for these: `>` can overwrite any file under your home, and
-`|` can start any second program (including `sh`). Both break the premise that a granted call runs
-exactly one known program — which is what makes `grant: home` defensible at all. The fix belongs in
-the instructions, not in the matcher.
+`2>&1 | tail -12` is the shape models reach for most, and it now matches. The one cost: the exit code the model sees becomes
+`tail`'s, so a failing `lark-cli` can hide behind a successful `tail`. Piping output is therefore
+still not recommended for commands whose exit status matters — it just no longer costs a prompt.
 
-Put this in the project's `AGENTS.md` (or the equivalent project/global memory):
+### No `AGENTS.md` in every repository
 
-````md
-## Running lark-cli / gh
+The plugin tells the model itself: it registers one system-prompt section
+(`tool:bash:auto-approval`, right after `tool:bash`) generated from the live rules — which commands
+are granted, which shapes are recognized, and which ones fall back to approval.
 
-- Do not append `2>&1 | tail -N`, `| head` or `> file` to commands: the DSH bash tool already
-  merges stdout/stderr, returns only the tail, and spills the full output to a file (the result
-  carries its path).
-- Change directories with the bash tool's `workdir` parameter. `cd <dir> && <command>` also works
-  (the plugin understands exactly that prefix), but nothing may follow it — no pipes, no
-  redirections.
-- Only two shapes can match the allow-list: `lark-cli ...` (with `workdir`) or
-  `cd <dir> && lark-cli ...`.
-````
+- It follows the installation, so every repository does not need to repeat the note;
+- a rule saved in Settings updates the text on the next model step, with no restart;
+- `promptHint: false` removes the section. It is guidance only: the matcher still decides, and a
+  model that ignores it merely gets the normal approval prompt.
+
+An `AGENTS.md` note is still allowed, but it is a project preference now, not a requirement of this
+plugin.
+
+### Narrow roots and "any shape" (`roots` / `shape`)
+
+The shape check and the width of the roots compensate for each other: the wider the root, the stricter
+the grammar has to be. They are two separate steps.
+
+**First, narrow the roots (no grammar is relaxed):**
+
+```yaml
+- name: lark-cli
+  command: lark-cli
+  roots:                                  # only these two directories outside the workspace
+    - ~/.lark-cli
+    - ~/Library/Application Support/lark-cli
+  shape: strict                           # the default: the shape table above still applies
+```
+
+`~/.zshrc`, `~/Library/LaunchAgents/` and `~/.ssh` are no longer inside the writable set. This is the
+highest-value tightening available, and it changes no matching behavior.
+
+**Second, turn on `shape: any` when complex commands are the norm:**
+
+```yaml
+- name: lark-cli
+  command: lark-cli
+  roots: [~/.lark-cli, ~/Library/Application Support/lark-cli]
+  shape: any
+```
+
+The matcher stops reading the grammar and only requires the program name to appear as a word
+(quoted text counts as one word; comments and redirect targets do not). `| tee`, `;`, `&&`, `for`
+loops and `xargs` then match, while writes stay limited to the listed roots by the kernel.
+
+Still refused:
+
+- a path the model chose (`./lark-cli`, `/tmp/x/lark-cli`) — the shadowing vector;
+- `bash -c 'lark-cli …'`, where the name is inside a quoted word (one more prompt, never a wrong grant);
+- `shape: any` with `$HOME` (or an ancestor of it): the rule is dropped at load time with a warning —
+  "any shape" leaves only the roots as a boundary, and handing it the whole home directory means
+  "any command may write home".
+
+Four costs to accept before using `any`:
+
+1. **The list must be complete.** A missing directory makes the command fail **while running**
+   with `[sandbox: file access denied …]`, which sends the model into the escalation dance this
+   plugin exists to remove — how often depends on how complete the list is.
+2. **Name matching is no longer a realpath check.** `shape: any` reads strings, so the PATH-shadow
+   check does not apply and the kernel's roots are the only boundary.
+3. **App-private directories are still persistence.** If the CLI loads configuration or hooks from
+   that directory, writing there means code execution next run. Judge per app: narrow is not the
+   same as harmless.
+4. **A missing overlay leaves the extra roots inert.** On POSIX a grant is always "workspace + the
+   listed roots"; when the root overlay is not installed only the workspace is writable, the Host log
+   warns once, and the audit line is marked `(root overlay inactive)`. It never degrades into "only
+   the first root".
+5. **Windows** cannot express several roots: a multi-root rule uses the first one and warns.
+
+Suggested order: run `roots` + `strict` first, confirm no new `file access denied`, then switch only
+the rules that genuinely need complex commands to `any`.
 
 ## Install
 
@@ -163,7 +233,7 @@ Editing the allow-list is always a user action: the plugin registers no agent to
 
 ## Configuration (YAML, advanced)
 
-The default allow-list is `lark-cli` and `gh`. For fields the UI does not cover (`audit`, `upgradeFromReadOnly`, `extraPath`, `allowCdPrefix`, `trace`) or for exact rule ordering, override the row in your profile patch (`~/.dsh/profiles/<profile>/cordis.patch.yml`). Note that an override replaces the whole `config` — restate every field you need:
+The default allow-list is `lark-cli` and `gh`. For fields the UI does not cover (`audit`, `upgradeFromReadOnly`, `extraPath`, `allowCdPrefix`, `promptHint`, `trace`) or for exact rule ordering, override the row in your profile patch (`~/.dsh/profiles/<profile>/cordis.patch.yml`). Note that an override replaces the whole `config` — restate every field you need:
 
 ```yaml
 - id: bash-sandbox-auto-approval
@@ -172,18 +242,27 @@ The default allow-list is `lark-cli` and `gh`. For fields the UI does not cover 
     upgradeFromReadOnly: false
     extraPath: []
     allowCdPrefix: true
+    promptHint: true
     rules:
       - { name: lark-cli, command: lark-cli, grant: home }
       - { name: gh, command: gh, grant: home, deny: ['\bapi\b.*--method\s+DELETE'] }
       - { name: my-tool, command: /opt/homebrew/bin/my-tool, grant: custom, root: ~/.my-tool }
+      - name: lark-cli-narrow
+        command: lark-cli
+        roots:                          # multi-root: only these two directories outside the workspace
+          - ~/.lark-cli
+          - ~/Library/Application Support/lark-cli
+        shape: any                      # stop reading the grammar; only with narrow roots
 ```
 
 | Field | Required | Meaning |
 |---|---|---|
 | `command` | yes | bare command name, or an absolute path |
 | `name` | no | label used in logs (defaults to `command`) |
-| `grant` | no | `home` (default) / `custom` / `full` |
+| `grant` | no | `home` (default) / `custom` / `roots` / `full` |
 | `root` | for `custom` | writable root, absolute or `~/...` |
+| `roots` | no | list of writable roots (absolute or `~/...`); takes precedence over `grant` / `root` |
+| `shape` | no | `strict` (default) or `any`: whether the command grammar is parsed |
 | `deny` | no | regexes over the raw command line; any match cancels the grant |
 | `allow` | no | regexes; when non-empty at least one must match |
 
@@ -195,17 +274,28 @@ Top-level switches (not per-rule):
 
 | Field | Default | Meaning |
 |---|---|---|
-| `allowCdPrefix` | `true` | Accept one leading `cd <dir> &&`: strip it, resolve against that directory, keep matching. `false` restores the strict "one simple command" reading |
+| `allowCdPrefix` | `true` | Accept one leading `cd <dir> &&`: strip it, resolve against that directory, keep matching. `false` drops the `cd` prefix (write-neutral pipelines still match) |
 | `audit` | `true` | Write one Host log line per grant |
 | `upgradeFromReadOnly` | `false` | Do not widen a `read-only` session |
 | `extraPath` | `[]` | Extra PATH entries (a GUI-launched process can have a short PATH) |
 | `trace` | unset | Optional JSONL of every decision (non-match reason, matched rule, writable root) |
 
-| `grant` | Actual policy | Use for |
+`grant` / `roots` (on macOS/Linux with the overlay every root is **appended**, so the session
+workspace stays writable):
+
+| Value | Actual policy | Use for |
 |---|---|---|
-| `home` | macOS/Linux: `workspace-write`, workspace kept + `$HOME` appended; Windows or no overlay: writable root `$HOME` | CLIs that write their own state in your home and also write into the workspace (recommended) |
-| `custom` | `workspace-write`, writable root `root` | tighten to a single directory |
+| `home` | workspace + `$HOME` | CLIs that write their own state in your home and also write into the workspace |
+| `custom` | workspace + `root` | tighten to a single directory |
+| `roots: [...]` | workspace + every listed directory | the form worth preferring: narrow `$HOME` to app-private directories |
 | `full` | `danger-full-access` | genuinely unconstrained work (automates the full-access approval) |
+
+On POSIX a grant is always **"workspace + the listed roots"** and never a replacement: when the root
+overlay is not installed the extra roots are merely inert (the command keeps the workspace), the Host
+log warns once, and the audit line says `(root overlay inactive)`. The failure mode is therefore "the
+sandbox denied one write", not "the writable root was silently swapped for another directory".
+Windows can only carry one root: `home` becomes `$HOME`, and a multi-root rule uses its first root
+and warns once.
 
 Manual YAML edits need a restart. Saves from the UI apply immediately.
 
@@ -213,16 +303,20 @@ Manual YAML edits need a restart. Saves from the UI apply immediately.
 
 ## Verify
 
-Run each line **on its own**. `;`, `|` and a second `&&` are never granted; only a single leading `cd <dir> &&` is recognised (`allowCdPrefix: false` turns that off too):
+Run each line **on its own**. `;`, `&&`, `> file` and `| tee` are never granted; a single leading
+`cd <dir> &&`, `2>&1`, `>/dev/null`, `| tail -N`, `| head -N` and `| wc` are recognised:
 
 ```bash
-lark-cli task +get-my-tasks      # succeeds, no approval prompt
-gh api user --jq .login          # prints your login
-touch ~/whitelist-probe          # still denied: file access denied under workspace-write
-cd ~ && lark-cli task +get-my-tasks   # also succeeds: the single cd prefix is the same command
+lark-cli task +get-my-tasks                          # succeeds, no approval prompt
+lark-cli task +get-my-tasks 2>&1 | tail -5           # also succeeds: a write-neutral pipe
+gh api user --jq .login                              # prints your login
+touch ~/whitelist-probe                              # still denied: file access denied under workspace-write
+cd ~ && lark-cli task +get-my-tasks                  # also succeeds: the single cd prefix is the same command
+lark-cli task +get-my-tasks | tee /tmp/out           # denied and prompted: tee writes a file
 ```
 
-The last line is the control: the plugin widens the allow-list, not the session.
+The last two lines are the control: the plugin widens the allow-list and write-neutral pipes, not
+the session.
 
 On macOS/Linux the matched command keeps the session workspace too: refreshing a token and
 writing a download/export back into `./` in the same command is no longer denied (`home` is
@@ -238,7 +332,9 @@ UI check: add or remove a rule in **Settings → Command Auto-Approval** (or the
 4. **`full` automates the full-access approval.** Use it deliberately.
 5. **Aliases and wrappers are not matched** (`alias`, `env`, `timeout`, `npx …`), by design.
 6. It only answers *"may this command's sandbox be widened"*, never *"should this command run"*.
-7. **The UI adds no authority surface.** It writes the same profile `cordis.patch.yml` you could edit by hand; there is no new HTTP route and no agent tool. `full` rules require an explicit user acknowledgement.
+7. **Pipeline stages are trusted at the same level as the matched program.** `tail` / `head` / `wc` are resolved through `PATH` + `realpath` too; they simply accept no path operand and no flag that writes a file or starts another program. An attacker who can hijack `PATH` could already hijack the matched program.
+8. **`shape: any` leaves the kernel as the only boundary.** Matching is string-level (`echo lark-cli` counts) and the PATH-shadow check no longer applies; safety depends entirely on how narrow the roots are.
+9. **The UI adds no authority surface.** It writes the same profile `cordis.patch.yml` you could edit by hand; there is no new HTTP route and no agent tool. `full` rules require an explicit user acknowledgement.
 
 ## Limitations
 
@@ -248,7 +344,13 @@ UI check: add or remove a rule in **Settings → Command Auto-Approval** (or the
 - **Do not mix it with a plugin that owns the `sandbox` provider.** The overlay appends its allow to the final argv/profile; a plugin that appends its own deny in the same profile can end up on the wrong side of the order. This plugin assumes the official `dsh-sandbox-local` provider.
 - **bash only.** Windows uses `pwsh-sandbox`; the overlay is not installed there and `home` falls back to replacing the root. The `cd` prefix is POSIX `&&` only, so pwsh's `cd x; cmd` still does not match.
 - **One `cd` prefix only.** `cd a && cd b && …`, `pushd` and `(cd a && …)` do not match; use the bash tool's `workdir` for nested directory changes.
-- **Pipes and redirections never match.** Habitual `2>&1 | tail -N`, `| head` or `> file` suffixes send the whole command back to the normal approval prompt (see "Pitfall" above for the reason and the AGENTS.md rule).
+- **Only write-neutral pipes match.** `| tail`, `| head` and `| wc` with numeric arguments match; `| tee`, `| sh`, `| sed -i`, `| awk`, `| tail -f` and `> file` go back to the normal approval prompt.
+- **A pipe changes the exit code the model sees.** `a | tail -12` reports `tail`'s status, so a failing `a` can hide; drop the pipe when the exit status matters.
+- **The prompt section is best effort.** `promptHint` lowers the chance of a wrong shape; the matcher still decides, and a model that ignores the hint merely gets one more prompt.
+- **`shape: any` matching is string-level.** `echo lark-cli` counts (and receives the narrow roots), while `bash -c 'lark-cli …'` does not; comments and redirect targets are ignored.
+- **`shape: any` cannot use `$HOME`.** Such a rule is dropped at load time with a warning (see "Narrow roots and any shape").
+- **Multi-root does not exist on Windows.** Only the first root is used, with one warning.
+- **A missing `roots` entry fails at run time.** `custom` / `roots` are no longer "wide enough" like `home`: a forgotten directory triggers a sandbox denial and possibly the escalation prompt.
 - **Depends on `ctx.shell.resolve()`.** A future DSH release that changes the executor contract degrades the plugin to "no grants" — it does not break execution.
 - **The UI manages `rules` only.** `audit`, `upgradeFromReadOnly`, `extraPath` and `trace` stay in YAML; the UI blocks duplicate commands (YAML can still order them by hand).
 

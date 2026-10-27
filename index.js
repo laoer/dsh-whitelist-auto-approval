@@ -8,10 +8,10 @@
  * prompt for *full* access — for a command that only needs its own home files.
  *
  * Fix: decorate the live `ctx.shell.resolve()`. For a configured command the
- * spec's per-call `sandboxPolicy` is widened to `workspace-write` with `$HOME`
- * as the writable root, so the first attempt already succeeds and the
- * escalation dance never starts. Every other call keeps the standing policy
- * and the normal approval prompt.
+ * spec's per-call `sandboxPolicy` is widened to `workspace-write` with the
+ * rule's writable roots appended (`$HOME` by default), so the first attempt
+ * already succeeds and the escalation dance never starts. Every other call
+ * keeps the standing policy and the normal approval prompt.
  *
  * This plugin does not replace `ctx.shell` or register a service. A failure
  * here can therefore never leave the composition without a shell — the worst
@@ -49,12 +49,105 @@ const MAX_LOGGED_COMMAND = 500
 const NO_RULES = []
 
 /**
- * Append one root to a policy's additional-root list without duplicating it.
- * Keeps the original array reference when the root is already present.
+ * Prompt section this plugin owns. It states the recognized command shapes, so
+ * a deployment does not need a per-repository `AGENTS.md` note: the constraint
+ * follows the installation instead of the checkout.
  */
-function addRoot(existing, root) {
-  const roots = Array.isArray(existing) ? existing : []
-  return roots.includes(root) ? roots : [...roots, root]
+const PROMPT_SECTION = 'tool:bash:auto-approval'
+/**
+ * Fallback placement: `tool:bash` is order 1000 in the prompt registry and
+ * `tool:pwsh` is 1010, so the hint sits with the tool it explains.
+ */
+const PROMPT_ORDER_FALLBACK = 1002
+
+/**
+ * The model-facing text for the current rules.
+ *
+ * It names the granted commands (the part the model cannot guess) and splits
+ * them by shape: commands whose calls must use a recognized shape, and
+ * commands granted for any shape. It is derived from the live rules on every
+ * assembly, so a rule saved in Settings is described on the next model step.
+ * This is guidance only: the matcher and the sandbox still decide, and a model
+ * that ignores it merely gets the normal approval prompt.
+ *
+ * @param {object[]} rules resolved rules.
+ * @returns {string} one paragraph, or `''` when there is nothing to announce.
+ */
+function promptText(rules) {
+  const strictNames = []
+  const anyNames = []
+  for (const rule of rules) {
+    const declared = String(rule?.command ?? '').trim()
+    if (declared === '') continue
+    const label = String(rule?.name ?? '').trim() || declared
+    const bucket = rule?.shape === 'any' ? anyNames : strictNames
+    if (!bucket.includes(label)) bucket.push(label)
+  }
+  if (strictNames.length === 0 && anyNames.length === 0) return ''
+
+  // Bound the token cost: a long allow-list is summarized instead of pasted.
+  const summary = (names) => {
+    const shown = names.slice(0, 8)
+    const rest = names.length - shown.length
+    return rest > 0 ? `${shown.join(', ')} (+${rest} more)` : shown.join(', ')
+  }
+
+  const parts = []
+  if (strictNames.length > 0) {
+    parts.push(
+      [
+        `Auto-approved bash commands on this deployment: ${summary(strictNames)}.`,
+        'A call in one of these shapes runs with its extra writable roots outside the workspace instead of an approval prompt: `<command> ...` with the `workdir` argument, or `cd <dir> && <command> ...`.',
+        'A trailing `2>&1`, a `>/dev/null` redirect, and a pipe into `tail`, `head`, or `wc` with numeric arguments are accepted too.',
+        'Anything else (`> file`, `| tee`, `| sh`, `;`, a second `&&`, `$(...)`) runs under the normal sandbox and its approval prompt.',
+      ].join(' '),
+    )
+  }
+  if (anyNames.length > 0) {
+    parts.push(
+      `Any command line that names ${summary(anyNames)} is granted its configured writable roots whatever the shell syntax; writes stay limited to those roots.`,
+    )
+  }
+  return parts.join(' ')
+}
+
+/**
+ * Append roots to a policy's additional-root list without duplicating any.
+ * Keeps the original array reference when every root is already present, so a
+ * repeated grant does not churn the spec.
+ */
+function addRoots(existing, roots) {
+  const kept = Array.isArray(existing) ? existing : []
+  const missing = roots.filter((root) => !kept.includes(root))
+  return missing.length === 0 ? kept : [...kept, ...missing]
+}
+
+/**
+ * Decide how one grant is expressed in the policy.
+ *
+ * POSIX providers carry a list of extra roots, so a widening grant there is
+ * always additive: the session workspace keeps its root and the rule's roots
+ * are appended. When the overlay is missing those extra roots are simply inert
+ * — the command still has the workspace — which is why the target string says
+ * so and the caller warns once.
+ *
+ * Windows ACL policies carry a single root, so a rule with roots replaces it
+ * and only the first root survives.
+ *
+ * @param {{ kind?: string, mode?: string, roots?: string[] }} grant compiled grant.
+ * @param {{ overlayReady?: boolean, platform?: string }} state deployment facts.
+ * @returns {{ additive: boolean, overlayMissing: boolean, target: string }}
+ */
+export function resolveGrantShape(grant, state = {}) {
+  const roots = Array.isArray(grant?.roots) ? grant.roots : []
+  const mode = String(grant?.mode ?? '')
+  const platform = state.platform ?? process.platform
+  const additive = roots.length > 0 && platform !== 'win32'
+  const overlayMissing = additive && state.overlayReady !== true
+  const target = additive
+    ? `${roots.map((root) => `+${root}`).join(' ')}${overlayMissing ? ' (root overlay inactive)' : ''}`
+    : (roots[0] ?? mode)
+  return { additive, overlayMissing, target }
 }
 
 /**
@@ -105,6 +198,10 @@ export function apply(ctx, config = {}) {
    * replace-the-root behavior.
    */
   const overlayState = { ready: false }
+  /** A missing overlay affects every granted call, so warn once per apply. */
+  let warnedMissingOverlay = false
+  /** Windows can only express one root; say so once per apply. */
+  let warnedMultiRoot = false
 
   const matcherOptions = {
     extraPath: config.extraPath ?? [],
@@ -151,6 +248,35 @@ export function apply(ctx, config = {}) {
     })
   }
 
+  // The plugin owns the model-facing hint for its own rules. This is what
+  // replaces a per-repository AGENTS.md note: it ships with the installation,
+  // follows the live rules, and disappears when the rules are empty. A failure
+  // here never affects the shell decorator below.
+  if (config.promptHint !== false) {
+    ctx.inject(['systemPrompt'], (scope) => {
+      const systemPrompt = scope.systemPrompt
+      if (systemPrompt === undefined || typeof systemPrompt.section !== 'function') {
+        trace('prompt-skipped', { reason: 'no systemPrompt.section' })
+        return
+      }
+      scope.effect(() => {
+        try {
+          const base = typeof systemPrompt.getSectionOrder === 'function' ? systemPrompt.getSectionOrder('TOOL_BASH') : undefined
+          return systemPrompt.section({
+            name: PROMPT_SECTION,
+            order: Number.isFinite(base) ? base + 2 : PROMPT_ORDER_FALLBACK,
+            text: () => promptText(readRules(config)),
+            // Rule labels are user data: never treat `{{…}}` in them as a variable.
+            interpolate: false,
+          })
+        } catch (error) {
+          ctx.logger.warn(`[auto-approval] prompt section skipped: ${String(error)}`)
+          return () => {}
+        }
+      })
+    })
+  }
+
   // The injected form the shipped plugins use; it also re-runs if the executor
   // instance is replaced.
   ctx.inject(['shell'], (scope) => {
@@ -188,30 +314,60 @@ export function apply(ctx, config = {}) {
           })
           if (decision === undefined) return spec
 
-          // `home` is the one grant that can be applied additively: the
-          // provider overlay appends `$HOME` to the shipped writable roots, so
-          // the session workspace stays writable. Without the overlay (Windows,
-          // or a provider we cannot recognize) the old replace-the-root grant
-          // remains the only behavior that works, so keep it as the fallback.
-          const { kind, ...grantPolicy } = decision.grant
-          const additive = kind === 'home' && overlayState.ready
-          const target = additive
-            ? `+${grantPolicy.workspaceRoot}`
-            : (grantPolicy.workspaceRoot ?? grantPolicy.mode)
+          // On POSIX a widening grant is always expressed additively: the
+          // shipped writable roots (the session workspace) stay and the rule's
+          // roots are appended. The provider materializes them through the
+          // overlay; if that overlay is missing the roots are simply inert.
+          //
+          // Deliberately never "replace the root" here. A replacement silently
+          // drops the session workspace and, with several roots, keeps only the
+          // first one — a grant that is both narrower than configured and wider
+          // than the workspace, which is exactly the kind of mismatch that looks
+          // like a broken CLI instead of a sandbox decision. Windows keeps the
+          // replacement because its ACL policy can only carry one root.
+          const { kind, mode, roots } = decision.grant
+          const { additive, overlayMissing, target } = resolveGrantShape(decision.grant, {
+            overlayReady: overlayState.ready,
+          })
 
+          if (!additive && roots.length > 1 && !warnedMultiRoot) {
+            warnedMultiRoot = true
+            trace('multi-root-fallback', { rule: decision.rule, roots })
+            ctx.logger.warn(
+              `[auto-approval] this sandbox runner cannot express multiple writable roots; only ${roots[0]} is used for rule "${decision.rule}"`,
+            )
+          }
+          if (overlayMissing && !warnedMissingOverlay) {
+            warnedMissingOverlay = true
+            trace('grant-without-overlay', { rule: decision.rule, roots })
+            ctx.logger.warn(
+              `[auto-approval] the writable-root overlay is not installed; rule "${decision.rule}" keeps the workspace root but ${roots.length === 1 ? 'its root is' : 'its extra roots are'} not applied`,
+            )
+          }
           if (audit) {
             const command = String(request?.command ?? '').slice(0, MAX_LOGGED_COMMAND)
             const session = policy.sessionId === undefined ? '' : ` session=${policy.sessionId}`
-            trace('grant', { rule: decision.rule, from: policy.workspaceRoot, to: target, additive, command })
+            trace('grant', {
+              rule: decision.rule,
+              kind,
+              from: policy.workspaceRoot,
+              to: target,
+              roots,
+              additive,
+              overlay: overlayState.ready,
+              command,
+            })
             ctx.logger.info(`[auto-approval] rule "${decision.rule}" -> ${target}${session}: ${command}`)
           }
           const sandboxPolicy = additive
             ? {
                 ...policy,
-                mode: grantPolicy.mode,
-                extraWritableRoots: addRoot(policy.extraWritableRoots, grantPolicy.workspaceRoot),
+                mode,
+                extraWritableRoots: addRoots(policy.extraWritableRoots, roots),
               }
-            : { ...policy, ...grantPolicy }
+            : roots.length === 0
+              ? { ...policy, mode }
+              : { ...policy, mode, workspaceRoot: roots[0] }
           const granted = { ...spec, sandboxPolicy }
           trace('resolve-out', {
             mode: granted.sandboxPolicy.mode,

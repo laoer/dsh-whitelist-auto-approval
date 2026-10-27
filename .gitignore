@@ -20,3 +20,6 @@ RELEASING.md
 .DS_Store
 *.log
 .env
+
+# local debug trace (plugin config.trace)
+aa-trace.jsonl

@@ -39,6 +39,9 @@ export const Config = Schema.object({
   allowCdPrefix: Schema.boolean()
     .default(true)
     .description('Accept one leading "cd <dir> &&" before an allow-listed command; set false for the strict reading.'),
+  promptHint: Schema.boolean()
+    .default(true)
+    .description('Tell the model which commands and command shapes are auto-approved, in the system prompt.'),
   trace: Schema.string()
     .description('Optional JSONL trace file for diagnosing rule decisions.'),
   rules: Schema.array(Schema.any())
