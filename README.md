@@ -81,6 +81,43 @@ overlay 按 runner 追加，不重建 profile：
 - `argv[0]` 必须是裸命令名，或配置里写死的绝对路径；`./lark-cli`、`/tmp/x/lark-cli` 这类"模型自己指定的路径形式"不匹配；
 - 用 `PATH` 解析出真实文件（`realpath`），并拒绝落在**会话工作区 / `/tmp` / 系统临时目录**里的可执行文件——这是模型唯一能靠"往仓库里丢个同名脚本"劫持命名的路径。
 
+### 常见坑：`2>&1 | tail -N` 这类后缀
+
+模型很爱把命令写成：
+
+```bash
+cd /repo && lark-cli docs +update --doc ... --as user 2>&1 | tail -12
+```
+
+这条**不会命中**：`cd` 前缀会照常被剥掉，但剩下的 `lark-cli ... 2>&1 | tail -12` 里
+`>` 是"打开文件"、`|` 是"再跑一个程序"，两者都属于组合命令，词法层依旧拒绝。
+去掉这两个后缀就能命中；而且 DSH 的 bash 工具本来就会合并 stdout/stderr、只返回尾部，
+并把完整输出写到 spill 文件（结果里给出路径），这两个后缀纯属多余。
+
+| 写法 | 结果 |
+|---|---|
+| `cd /repo && lark-cli docs +update ...` | ✅ 命中 |
+| `lark-cli docs +update ...`（配 `workdir`） | ✅ 命中 |
+| 同上，末尾再补 `2>&1` | ❌ `>` 被拒 |
+| 同上，末尾再接一段 `tail -12` 管道 | ❌ 管道被拒 |
+| 两个后缀都补上 | ❌ 两个都拒 |
+
+插件**不会**为这两种写法放宽词法层：`>` 能覆盖家目录里的任意文件，`|` 能启动任意第二个程序
+（包括 `sh`），两者都会打破"这条调用只运行一个已知程序"的前提——而这正是 `grant: home`
+可以安全成立的原因。正确做法是约束 agent 别写。
+
+把下面这段放进项目根目录的 `AGENTS.md`（或等价的项目/全局记忆）：
+
+````md
+## 执行 lark-cli / gh
+
+- 不要给命令追加 `2>&1 | tail -N`、`| head`、`> file` 这类后缀：DSH 的 bash 工具已经合并
+  stdout/stderr、只返回尾部，并把完整输出写到 spill 文件（结果里带路径）。
+- 换目录用 bash 工具的 `workdir` 参数；`cd <dir> && <命令>` 也可以（插件只认这一种前缀），
+  但后面不能再接管道或重定向。
+- 能命中白名单的形态只有两种：`lark-cli ...`（配 `workdir`）或 `cd <dir> && lark-cli ...`。
+````
+
 ## 安装
 
 要求：DSH Desktop（带 profile），macOS 或 Linux，bash 路径。
@@ -227,6 +264,7 @@ UI 验证：在 **设置 → 命令自动放行**（或 Plugins 行页）添加�
 - **不要和接管 `sandbox` provider 的插件混用**：overlay 的 allow 追加在最终 argv/profile 末尾；如果别的插件在同一 profile 里追加了自己的 deny，顺序可能反过来。本插件假设 provider 是官方 `dsh-sandbox-local`。
 - **只处理 bash**：Windows 上 DSH 走 `pwsh-sandbox`；overlay 在 win32 不安装，`home` 退回替换根。`cd` 前缀也只认 POSIX 的 `&&`，pwsh 的 `cd x; cmd` 仍不命中。
 - **`cd` 前缀只认一个**：`cd a && cd b && …`、`pushd`、`(cd a && …)` 都不命中；嵌套目录切换直接用 bash 工具的 `workdir`。
+- **管道和重定向一律不命中**：`2>&1 | tail -N`、`| head`、`> file` 这类习惯写法会让整条命令落回原审批（原因和 AGENTS.md 约束见上文「常见坑」）。
 - **依赖 `ctx.shell.resolve()` 这个方法名**：DSH 升级若改变执行器契约，插件会退化为"不放行"，不会破坏执行。
 - **UI 只管理 `rules`**：`audit`、`upgradeFromReadOnly`、`extraPath`、`trace` 仍在 YAML；同一 `command` 的重复规则在 UI 中被阻止（YAML 仍可按顺序手写）。
 - **不能替代人工判断**。

@@ -70,6 +70,48 @@ The model hands over a whole shell string, so the plugin only accepts *one simpl
 - `argv[0]` must be a bare command name or an absolute path written in the config — `./lark-cli` is not matched;
 - the executable is resolved through `PATH` and `realpath`, and a binary inside the session workspace, `/tmp` or the temp directory is refused (that is the only way a model could shadow the name from the repository).
 
+### Pitfall: `2>&1 | tail -N` suffixes
+
+Models love to write:
+
+```bash
+cd /repo && lark-cli docs +update --doc ... --as user 2>&1 | tail -12
+```
+
+This is **not** matched: the `cd` prefix is stripped as usual, but the remainder
+`lark-cli ... 2>&1 | tail -12` still contains `>` (open a file) and `|` (run a second program),
+so it is a compound command and the lexer refuses it. Drop the suffixes and it matches — and both
+suffixes are redundant anyway: the DSH bash tool already merges stdout/stderr, returns only the
+tail, and spills the full output to a file whose path it reports.
+
+| Shape | Result |
+|---|---|
+| `cd /repo && lark-cli docs +update ...` | matched |
+| `lark-cli docs +update ...` (with `workdir`) | matched |
+| the same, plus a trailing `2>&1` | refused (`>`) |
+| the same, plus a trailing `tail -12` pipe | refused (pipe) |
+| both suffixes | refused (both) |
+
+The plugin will **not** widen the lexer for these: `>` can overwrite any file under your home, and
+`|` can start any second program (including `sh`). Both break the premise that a granted call runs
+exactly one known program — which is what makes `grant: home` defensible at all. The fix belongs in
+the instructions, not in the matcher.
+
+Put this in the project's `AGENTS.md` (or the equivalent project/global memory):
+
+````md
+## Running lark-cli / gh
+
+- Do not append `2>&1 | tail -N`, `| head` or `> file` to commands: the DSH bash tool already
+  merges stdout/stderr, returns only the tail, and spills the full output to a file (the result
+  carries its path).
+- Change directories with the bash tool's `workdir` parameter. `cd <dir> && <command>` also works
+  (the plugin understands exactly that prefix), but nothing may follow it — no pipes, no
+  redirections.
+- Only two shapes can match the allow-list: `lark-cli ...` (with `workdir`) or
+  `cd <dir> && lark-cli ...`.
+````
+
 ## Install
 
 Requirements: DSH Desktop (profile-based), macOS or Linux, bash path.
@@ -206,6 +248,7 @@ UI check: add or remove a rule in **Settings → Command Auto-Approval** (or the
 - **Do not mix it with a plugin that owns the `sandbox` provider.** The overlay appends its allow to the final argv/profile; a plugin that appends its own deny in the same profile can end up on the wrong side of the order. This plugin assumes the official `dsh-sandbox-local` provider.
 - **bash only.** Windows uses `pwsh-sandbox`; the overlay is not installed there and `home` falls back to replacing the root. The `cd` prefix is POSIX `&&` only, so pwsh's `cd x; cmd` still does not match.
 - **One `cd` prefix only.** `cd a && cd b && …`, `pushd` and `(cd a && …)` do not match; use the bash tool's `workdir` for nested directory changes.
+- **Pipes and redirections never match.** Habitual `2>&1 | tail -N`, `| head` or `> file` suffixes send the whole command back to the normal approval prompt (see "Pitfall" above for the reason and the AGENTS.md rule).
 - **Depends on `ctx.shell.resolve()`.** A future DSH release that changes the executor contract degrades the plugin to "no grants" — it does not break execution.
 - **The UI manages `rules` only.** `audit`, `upgradeFromReadOnly`, `extraPath` and `trace` stay in YAML; the UI blocks duplicate commands (YAML can still order them by hand).
 
