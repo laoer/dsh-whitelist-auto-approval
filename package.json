@@ -1,6 +1,6 @@
 {
   "name": "dsh-whitelist-auto-approval",
-  "version": "0.4.0-beta",
+  "version": "0.4.0",
   "description": "Per-command sandbox allow-list for the DSH bash tool, managed from Settings and the Plugins page: allow-listed CLIs run with configurable writable roots (workspace stays writable on macOS/Linux) instead of prompting for danger-full-access; write-neutral pipes such as `2>&1 | tail -N` still match, and a narrow-root rule can accept any command shape.",
   "license": "MIT",
   "author": "Tim Gong",
