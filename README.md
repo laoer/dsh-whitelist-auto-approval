@@ -360,3 +360,7 @@ node --test "test/*.test.mjs"
 ## License
 
 [MIT](./LICENSE)
+
+<a href="https://doseloop.bohely.cn" target="_blank" rel="noopener noreferrer">
+  <img src="https://img.bohely.cn/doseloop/banner-2.png" alt="DoseLoop · 用药有数 — 为真实生活而设计的用药提醒" width="100%">
+</a>
